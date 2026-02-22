@@ -19,35 +19,35 @@
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 1.1 | Project scaffolding (`go.mod`, directory structure, `main.go`) | ⬜ | |
-| 1.2 | Global state management (tokens, models, config, flags) | ⬜ | Singleton or context-based |
-| 1.3 | File system paths (`~/.local/share/copilot-api/`) | ⬜ | `ensurePaths()` equivalent |
-| 1.4 | GitHub OAuth device-code flow (client ID, scope `read:user`) | ⬜ | |
-| 1.5 | Device code polling with interval | ⬜ | |
-| 1.6 | GitHub token persistence to disk | ⬜ | `chmod 0600` |
-| 1.7 | Copilot token fetch (`GET /copilot_internal/v2/token`) | ⬜ | |
-| 1.8 | Copilot token auto-refresh timer | ⬜ | `refresh_in - 60s` |
-| 1.9 | User identity logging (`GET /user`) | ⬜ | |
-| 1.10 | Dynamic Copilot base URL per account type | ⬜ | individual/business/enterprise |
-| 1.11 | VS Code version fetching (AUR scrape + hardcoded fallback) | ⬜ | |
-| 1.12 | Copilot request headers builder (User-Agent, editor-version, etc.) | ⬜ | |
-| 1.13 | `X-Initiator` header (agent/user) | ⬜ | |
-| 1.14 | `x-request-id: {uuid}` per request | ⬜ | |
-| 1.15 | HTTP server setup (e.g. `net/http` + router like `chi` or `echo`) | ⬜ | |
-| 1.16 | Request logging middleware | ⬜ | |
-| 1.17 | CORS middleware | ⬜ | |
-| 1.18 | Health check `GET /` → "Server running" | ⬜ | |
-| 1.19 | `GET /models` + `/v1/models` — model listing | ⬜ | |
-| 1.20 | Model capabilities parsing & caching at startup | ⬜ | |
-| 1.21 | `GET /models` service — fetch from Copilot API | ⬜ | |
-| 1.22 | `POST /chat/completions` + `/v1/chat/completions` — passthrough | ⬜ | |
-| 1.23 | `max_tokens` auto-fill from model capabilities | ⬜ | |
-| 1.24 | Agent/user initiator detection (chat completions) | ⬜ | |
-| 1.25 | Non-streaming response passthrough | ⬜ | |
-| 1.26 | SSE streaming passthrough | ⬜ | |
-| 1.27 | `HTTPError` type + `forwardError` utility | ⬜ | |
-| 1.28 | `GET /token` — expose current Copilot bearer token | ⬜ | |
-| 1.29 | Basic `start` command (port, github-token, account-type flags only) | ⬜ | |
+| 1.1 | Project scaffolding (`go.mod`, directory structure, `main.go`) | ✅ | chi + cobra |
+| 1.2 | Global state management (tokens, models, config, flags) | ✅ | Singleton with sync.RWMutex |
+| 1.3 | File system paths (`~/.local/share/copilot-api/`) | ✅ | `EnsurePaths()` |
+| 1.4 | GitHub OAuth device-code flow (client ID, scope `read:user`) | ✅ | |
+| 1.5 | Device code polling with interval | ✅ | With slow_down handling |
+| 1.6 | GitHub token persistence to disk | ✅ | `0600` permissions |
+| 1.7 | Copilot token fetch (`GET /copilot_internal/v2/token`) | ✅ | |
+| 1.8 | Copilot token auto-refresh timer | ✅ | Goroutine with `refresh_in - 60s` |
+| 1.9 | User identity logging (`GET /user`) | ✅ | |
+| 1.10 | Dynamic Copilot base URL per account type | ✅ | individual/business/enterprise |
+| 1.11 | VS Code version fetching (AUR scrape + hardcoded fallback) | ✅ | 5s timeout, regex parse |
+| 1.12 | Copilot request headers builder (User-Agent, editor-version, etc.) | ✅ | |
+| 1.13 | `X-Initiator` header (agent/user) | ✅ | |
+| 1.14 | `x-request-id: {uuid}` per request | ✅ | google/uuid |
+| 1.15 | HTTP server setup (e.g. `net/http` + router like `chi` or `echo`) | ✅ | go-chi/chi v5 |
+| 1.16 | Request logging middleware | ✅ | slog-based |
+| 1.17 | CORS middleware | ✅ | go-chi/cors |
+| 1.18 | Health check `GET /` → "Server running" | ✅ | |
+| 1.19 | `GET /models` + `/v1/models` — model listing | ✅ | |
+| 1.20 | Model capabilities parsing & caching at startup | ✅ | |
+| 1.21 | `GET /models` service — fetch from Copilot API | ✅ | |
+| 1.22 | `POST /chat/completions` + `/v1/chat/completions` — passthrough | ✅ | |
+| 1.23 | `max_tokens` auto-fill from model capabilities | ✅ | |
+| 1.24 | Agent/user initiator detection (chat completions) | ✅ | Last message role check |
+| 1.25 | Non-streaming response passthrough | ✅ | |
+| 1.26 | SSE streaming passthrough | ✅ | bufio.Scanner + http.Flusher |
+| 1.27 | `HTTPError` type + `forwardError` utility | ✅ | JSON error parsing |
+| 1.28 | `GET /token` — expose current Copilot bearer token | ✅ | |
+| 1.29 | Basic `start` command (port, github-token, account-type flags only) | ✅ | +verbose, +show-token |
 
 **Milestone**: Can authenticate, list models, and proxy OpenAI Chat Completions requests.
 
@@ -297,14 +297,15 @@ plus OpenAI Responses and Embeddings passthrough.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| HTTP framework | TBD (`chi`, `echo`, `gin`, or `net/http`) | Need router with middleware support |
-| CLI framework | TBD (`cobra`, `urfave/cli`) | Need subcommands + flags |
+| HTTP framework | `go-chi/chi` v5 | Lightweight, idiomatic, great middleware |
+| CLI framework | `spf13/cobra` | Most popular Go CLI, subcommand support |
 | SSE streaming | `bufio.Scanner` + `http.Flusher` | Native Go streaming |
 | JSON handling | `encoding/json` | Standard library |
 | Tokenizer | TBD (`tiktoken-go` or similar) | Need multi-encoding support |
 | Config | `encoding/json` file read/write | Match original behavior |
-| Logging | `log/slog` or `zerolog` | Structured logging |
+| Logging | `log/slog` (stdlib) | Structured logging, zero dependencies |
 | UUID | `google/uuid` | For `x-request-id` |
+| CORS | `go-chi/cors` | Pairs with chi router |
 
 ---
 
