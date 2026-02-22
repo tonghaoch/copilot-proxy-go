@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copilot Proxy - Usage Dashboard</title>
+<style>
+  :root {
+    --bg: #1d2021; --bg1: #282828; --bg2: #3c3836;
+    --fg: #ebdbb2; --fg2: #d5c4a1; --fg3: #a89984;
+    --red: #fb4934; --green: #b8bb26; --yellow: #fabd2f;
+    --blue: #83a598; --purple: #d3869b; --aqua: #8ec07c;
+    --orange: #fe8019;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    min-height: 100vh; padding: 2rem;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+  h1 { color: var(--aqua); margin-bottom: 1.5rem; font-size: 1.5rem; }
+  .input-row {
+    display: flex; gap: 0.5rem; margin-bottom: 1.5rem;
+  }
+  input[type="text"] {
+    flex: 1; padding: 0.6rem 1rem; border-radius: 6px;
+    border: 1px solid var(--bg2); background: var(--bg1);
+    color: var(--fg); font-size: 0.9rem; outline: none;
+  }
+  input:focus { border-color: var(--blue); }
+  button {
+    padding: 0.6rem 1.2rem; border-radius: 6px; border: none;
+    background: var(--blue); color: var(--bg); font-weight: 600;
+    cursor: pointer; font-size: 0.9rem;
+  }
+  button:hover { opacity: 0.9; }
+  .card {
+    background: var(--bg1); border-radius: 8px;
+    padding: 1.2rem; margin-bottom: 1rem;
+  }
+  .card h3 { color: var(--fg2); font-size: 0.85rem; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.8rem; }
+  .plan-badge {
+    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px;
+    background: var(--blue); color: var(--bg); font-weight: 600;
+    font-size: 0.85rem;
+  }
+  .quota-item { margin-bottom: 1rem; }
+  .quota-header {
+    display: flex; justify-content: space-between; margin-bottom: 0.3rem;
+    font-size: 0.9rem;
+  }
+  .quota-label { color: var(--fg2); }
+  .quota-value { color: var(--fg); font-weight: 600; }
+  .progress-bar {
+    height: 8px; border-radius: 4px; background: var(--bg2); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 4px; transition: width 0.5s ease;
+  }
+  .fill-green { background: var(--green); }
+  .fill-yellow { background: var(--yellow); }
+  .fill-red { background: var(--red); }
+  .fill-blue { background: var(--blue); }
+  .unlimited-badge {
+    display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px;
+    background: var(--blue); color: var(--bg); font-size: 0.75rem;
+  }
+  .json-view {
+    background: var(--bg); border-radius: 6px; padding: 1rem;
+    font-family: monospace; font-size: 0.8rem; color: var(--fg3);
+    overflow-x: auto; white-space: pre-wrap; max-height: 400px;
+    overflow-y: auto; margin-top: 0.5rem;
+  }
+  .error {
+    border: 1px solid var(--red); background: rgba(251,73,52,0.1);
+    border-radius: 6px; padding: 1rem; color: var(--red);
+  }
+  .welcome { color: var(--fg3); text-align: center; padding: 3rem 1rem; }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid var(--fg3); border-top-color: var(--blue);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: middle; margin-right: 0.5rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading { color: var(--fg3); padding: 2rem; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Copilot Proxy Usage</h1>
+  <div class="input-row">
+    <input type="text" id="endpoint" placeholder="http://localhost:4141/usage" />
+    <button onclick="fetchUsage()">Fetch</button>
+  </div>
+  <div id="content">
+    <div class="welcome">Enter your proxy endpoint URL and click Fetch</div>
+  </div>
+</div>
+<script>
+const params = new URLSearchParams(window.location.search);
+const epInput = document.getElementById('endpoint');
+if (params.get('endpoint')) {
+  epInput.value = params.get('endpoint');
+  fetchUsage();
+} else {
+  epInput.value = 'http://localhost:4141/usage';
+}
+
+async function fetchUsage() {
+  const el = document.getElementById('content');
+  const url = epInput.value.trim();
+  if (!url) return;
+
+  // Update URL bar
+  const u = new URL(window.location);
+  u.searchParams.set('endpoint', url);
+  history.replaceState(null, '', u);
+
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> Loading...</div>';
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    render(data);
+  } catch (e) {
+    el.innerHTML = `<div class="error">Error: ${e.message}</div>`;
+  }
+}
+
+function render(data) {
+  const el = document.getElementById('content');
+  let html = '';
+
+  // Plan
+  if (data.copilot_plan) {
+    html += `<div class="card"><h3>Plan</h3><span class="plan-badge">${data.copilot_plan}</span>`;
+    if (data.quota_reset_date) html += `<span style="margin-left:1rem;color:var(--fg3)">Resets: ${data.quota_reset_date}</span>`;
+    html += '</div>';
+  }
+
+  // Quotas
+  if (data.quota_snapshots) {
+    for (const [name, snap] of Object.entries(data.quota_snapshots)) {
+      html += `<div class="card"><h3>${name.replace(/_/g,' ')}</h3>`;
+      if (snap.unlimited) {
+        html += '<span class="unlimited-badge">Unlimited</span>';
+        html += '<div class="progress-bar" style="margin-top:0.5rem"><div class="progress-fill fill-blue" style="width:100%"></div></div>';
+      } else {
+        const pct = snap.percent_remaining || 0;
+        const cls = pct > 75 ? 'fill-green' : pct > 25 ? 'fill-yellow' : 'fill-red';
+        html += `<div class="quota-item"><div class="quota-header"><span class="quota-label">Remaining</span><span class="quota-value">${snap.remaining ?? '?'}</span></div>`;
+        html += `<div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div></div>`;
+      }
+      html += '</div>';
+    }
+  }
+
+  // Raw JSON
+  html += `<div class="card"><h3>Raw Response</h3><div class="json-view">${JSON.stringify(data, null, 2)}</div></div>`;
+
+  el.innerHTML = html;
+}
+</script>
+</body>
+</html>

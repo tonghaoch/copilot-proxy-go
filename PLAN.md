@@ -264,30 +264,30 @@ plus OpenAI Responses and Embeddings passthrough.
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 5.1 | Multi-stage Dockerfile (Go build) | ⬜ | |
-| 5.2 | Health check | ⬜ | |
-| 5.3 | `GH_TOKEN` env var support | ⬜ | |
-| 5.4 | Volume mount for token persistence | ⬜ | |
-| 5.5 | Entrypoint script (`--auth` flag handling) | ⬜ | |
-| 5.6 | Docker Compose example | ⬜ | |
+| 5.1 | Multi-stage Dockerfile (Go build) | ✅ | golang:1.22-alpine → alpine:3.20 |
+| 5.2 | Health check | ✅ | wget spider every 30s |
+| 5.3 | `GH_TOKEN` env var support | ✅ | entrypoint.sh |
+| 5.4 | Volume mount for token persistence | ✅ | docker-compose.yml |
+| 5.5 | Entrypoint script (`--auth` flag handling) | ✅ | |
+| 5.6 | Docker Compose example | ✅ | restart: unless-stopped |
 
 ### 5B — Web UI Dashboard
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 5.7 | Standalone HTML usage dashboard (embed or serve) | ⬜ | |
-| 5.8 | Quota progress bars with color thresholds | ⬜ | |
-| 5.9 | Detailed JSON tree view | ⬜ | |
-| 5.10 | URL query parameter configuration | ⬜ | |
-| 5.11 | Usage viewer URL printed at startup | ⬜ | |
+| 5.7 | Standalone HTML usage dashboard (embed or serve) | ✅ | go:embed, GET /dashboard |
+| 5.8 | Quota progress bars with color thresholds | ✅ | Green/yellow/red |
+| 5.9 | Detailed JSON tree view | ✅ | Monospace raw response |
+| 5.10 | URL query parameter configuration | ✅ | ?endpoint= auto-fetch |
+| 5.11 | Usage viewer URL printed at startup | ✅ | Dashboard URL in banner |
 
 ### 5C — Remaining Polish
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 5.12 | `auth` command `--verbose` and `--show-token` flags | ⬜ | |
-| 5.13 | Force re-authentication support | ⬜ | |
-| 5.14 | Token count calculation + logging in chat completions | ⬜ | |
+| 5.12 | `auth` command `--verbose` and `--show-token` flags | ✅ | Done in Phase 4 |
+| 5.13 | Force re-authentication support | ✅ | `auth --force` flag |
+| 5.14 | Token count calculation + logging in chat completions | ✅ | est_input_tokens in log |
 
 **Milestone**: Production-ready with Docker deployment and monitoring dashboard.
 

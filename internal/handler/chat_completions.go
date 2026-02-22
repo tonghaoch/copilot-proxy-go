@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"encoding/json"
+
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 )
@@ -21,7 +23,19 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("chat completion request", "stream", isStream, "initiator", initiatorStr(isAgent))
+	// Log token count estimate
+	var parsed struct {
+		Model    string `json:"model"`
+		Messages []any  `json:"messages"`
+	}
+	if json.Unmarshal(body, &parsed) == nil {
+		inputTokens := countStringTokens(string(body))
+		slog.Info("chat completion request", "model", parsed.Model,
+			"stream", isStream, "initiator", initiatorStr(isAgent),
+			"est_input_tokens", inputTokens)
+	} else {
+		slog.Info("chat completion request", "stream", isStream, "initiator", initiatorStr(isAgent))
+	}
 
 	resp, err := service.ProxyChatCompletion(body, isAgent)
 	if err != nil {

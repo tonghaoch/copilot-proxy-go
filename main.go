@@ -128,6 +128,7 @@ func startCmd() *cobra.Command {
 			// Start server
 			fmt.Println()
 			fmt.Printf("  Copilot API proxy is running on http://localhost:%d\n", port)
+			fmt.Printf("  Dashboard: http://localhost:%d/dashboard?endpoint=http://localhost:%d/usage\n", port, port)
 			fmt.Println()
 
 			srv := server.New(server.Options{
@@ -160,6 +161,7 @@ func authCmd() *cobra.Command {
 	var (
 		verbose   bool
 		showToken bool
+		force     bool
 	)
 
 	cmd := &cobra.Command{
@@ -171,6 +173,12 @@ func authCmd() *cobra.Command {
 
 			if err := state.EnsurePaths(); err != nil {
 				return err
+			}
+
+			if force {
+				// Delete existing token to force re-authentication
+				os.Remove(state.TokenPath())
+				slog.Info("cleared existing token, forcing re-authentication")
 			}
 
 			slog.Info("starting authentication...")
@@ -186,6 +194,7 @@ func authCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
 	cmd.Flags().BoolVar(&showToken, "show-token", false, "print token to console")
+	cmd.Flags().BoolVar(&force, "force", false, "force re-authentication even if token exists")
 
 	return cmd
 }

@@ -59,6 +59,7 @@ func New(opts Options) *http.Server {
 	r.Get("/", handler.Health)
 	r.Get("/token", handler.Token)
 	r.Get("/usage", handler.Usage)
+	r.Get("/dashboard", handler.Dashboard)
 
 	// Models
 	r.Get("/models", handler.Models)
