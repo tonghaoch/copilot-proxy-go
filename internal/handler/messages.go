@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -29,8 +30,28 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	betaHeader := r.Header.Get("Anthropic-Beta")
+
+	// Quota optimizations: compact/warmup → small model
+	if changed := applySmallModelIfNeeded(&req, betaHeader); changed {
+		slog.Info("routed to small model", "model", req.Model, "reason", "compact/warmup")
+	}
+
+	// Subagent marker detection → force agent initiator
+	subagent := detectSubagentMarker(req.Messages)
+
+	// Tool result + text block merging
+	mergeToolResultBlocks(&req)
+
 	// Look up the model
 	model := state.Global.FindModel(req.Model)
+
+	// Store subagent info for initiator override (used in handlers via context)
+	if subagent != nil {
+		slog.Debug("subagent detected", "agent_id", subagent.AgentID, "agent_type", subagent.AgentType)
+		// Force agent initiator by passing through context
+		r.Header.Set("X-Subagent-Detected", "true")
+	}
 
 	// Determine backend routing
 	if model != nil && isMessagesSupported(model) {
@@ -48,8 +69,7 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 // handleWithChatCompletions translates Anthropic → OpenAI Chat Completions,
 // proxies the request, and translates the response back.
 func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest) {
-	// TODO: Phase 3 will add extraPrompt from config
-	extraPrompt := ""
+	extraPrompt := config.GetExtraPrompt(normalizeModelName(req.Model))
 
 	ccReq, err := translateToOpenAI(req, extraPrompt)
 	if err != nil {
@@ -137,8 +157,7 @@ func streamChatToAnthropic(w http.ResponseWriter, resp *http.Response, model str
 // handleWithResponsesAPI translates Anthropic → Responses API, proxies the
 // request, and translates the response back.
 func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest) {
-	// TODO: Phase 3 will add extraPrompt from config and reasoning effort
-	extraPrompt := ""
+	extraPrompt := config.GetExtraPrompt(normalizeModelName(req.Model))
 
 	payload, err := translateToResponses(req, extraPrompt)
 	if err != nil {

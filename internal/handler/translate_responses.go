@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 )
 
 // translateToResponses converts an Anthropic request to a Responses API payload.
@@ -37,9 +39,9 @@ func translateToResponses(req *AnthropicRequest, extraPrompt string) (*Responses
 	// Temperature forced to 1 for reasoning models
 	temp := float64(1)
 
-	// Reasoning config
+	// Reasoning config from config system
 	reasoning := &ResponsesReasoning{
-		Effort:  "high",
+		Effort:  config.GetReasoningEffort(model),
 		Summary: "detailed",
 	}
 

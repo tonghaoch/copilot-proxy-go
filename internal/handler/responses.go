@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -43,9 +44,11 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// apply_patch tool conversion: custom → function
+	// apply_patch tool conversion: custom → function (if enabled in config)
 	if tools, ok := payload["tools"].([]any); ok {
-		payload["tools"] = convertApplyPatchTools(tools)
+		if config.Get().UseFunctionApplyPatch {
+			payload["tools"] = convertApplyPatchTools(tools)
+		}
 		// Remove web_search tools
 		payload["tools"] = removeWebSearchTools(payload["tools"].([]any))
 	}
