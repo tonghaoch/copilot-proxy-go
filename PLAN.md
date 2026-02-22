@@ -62,85 +62,85 @@
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 2.1 | `POST /v1/messages` route registration | ⬜ | |
-| 2.2 | 3-way backend routing logic (messages/responses/chat-completions) | ⬜ | Based on `supported_endpoints` |
-| 2.3 | System prompt translation (string or array → system message) | ⬜ | |
-| 2.4 | Extra prompt injection from config per model | ⬜ | |
-| 2.5 | User message translation (split tool_result into tool role) | ⬜ | |
-| 2.6 | Assistant message translation (tool_use → tool_calls, thinking → reasoning) | ⬜ | |
-| 2.7 | Image content handling (base64 → data URI) | ⬜ | |
-| 2.8 | Tool definition translation (input_schema → parameters) | ⬜ | |
-| 2.9 | Tool choice translation (auto/any/tool/none) | ⬜ | |
-| 2.10 | Model name normalization (strip version suffixes) | ⬜ | |
-| 2.11 | Non-streaming response translation (OpenAI → Anthropic) | ⬜ | |
-| 2.12 | Stop reason mapping (stop→end_turn, etc.) | ⬜ | |
-| 2.13 | Streaming translation — state machine (SSE chunks → Anthropic events) | ⬜ | Most complex piece |
-| 2.14 | Thinking text streaming as thinking blocks | ⬜ | |
-| 2.15 | Reasoning opaque streaming with placeholder + signature | ⬜ | |
-| 2.16 | Tool call streaming with `input_json_delta` | ⬜ | |
-| 2.17 | Multi-tool-call streaming state | ⬜ | |
-| 2.18 | Usage / cache token passthrough | ⬜ | |
-| 2.19 | Error event translation | ⬜ | |
-| 2.20 | Interleaved thinking protocol injection | ⬜ | XML system prompt + system-reminder |
-| 2.21 | Thinking budget calculation (clamp min/max) | ⬜ | |
-| 2.22 | Thinking block filtering for Claude models | ⬜ | Empty, "Thinking...", `@` in signature |
-| 2.23 | Edge cases: content after thinking, reasoning_text during content block | ⬜ | |
-| 2.24 | `copilot-vision-request: true` header when images detected | ⬜ | |
-| 2.25 | `"Thinking..."` placeholder for opencode compatibility | ⬜ | |
-| 2.26 | Cache read token separation (Anthropic billing model) | ⬜ | |
+| 2.1 | `POST /v1/messages` route registration | ✅ | messages.go |
+| 2.2 | 3-way backend routing logic (messages/responses/chat-completions) | ✅ | Based on `supported_endpoints` |
+| 2.3 | System prompt translation (string or array → system message) | ✅ | ParseSystemPrompt helper |
+| 2.4 | Extra prompt injection from config per model | ✅ | Wired, config integration Phase 3 |
+| 2.5 | User message translation (split tool_result into tool role) | ✅ | translateUserMessage |
+| 2.6 | Assistant message translation (tool_use → tool_calls, thinking → reasoning) | ✅ | translateAssistantMessage |
+| 2.7 | Image content handling (base64 → data URI) | ✅ | buildUserContent |
+| 2.8 | Tool definition translation (input_schema → parameters) | ✅ | translateTools |
+| 2.9 | Tool choice translation (auto/any/tool/none) | ✅ | translateToolChoice |
+| 2.10 | Model name normalization (strip version suffixes) | ✅ | normalizeModelName |
+| 2.11 | Non-streaming response translation (OpenAI → Anthropic) | ✅ | translateToAnthropic |
+| 2.12 | Stop reason mapping (stop→end_turn, etc.) | ✅ | mapStopReason |
+| 2.13 | Streaming translation — state machine (SSE chunks → Anthropic events) | ✅ | AnthropicStreamState |
+| 2.14 | Thinking text streaming as thinking blocks | ✅ | reasoning_text handling |
+| 2.15 | Reasoning opaque streaming with placeholder + signature | ✅ | Self-contained opaque blocks |
+| 2.16 | Tool call streaming with `input_json_delta` | ✅ | ToolCallDelta handling |
+| 2.17 | Multi-tool-call streaming state | ✅ | toolCallMap tracking |
+| 2.18 | Usage / cache token passthrough | ✅ | CacheReadInputTokens |
+| 2.19 | Error event translation | ✅ | TranslateErrorEvent |
+| 2.20 | Interleaved thinking protocol injection | ✅ | XML prompt + system-reminder |
+| 2.21 | Thinking budget calculation (clamp min/max) | ✅ | clampThinkingBudget |
+| 2.22 | Thinking block filtering for Claude models | ✅ | Empty, "Thinking...", `@` filter |
+| 2.23 | Edge cases: content after thinking, reasoning_text during content block | ✅ | Copilot bug workarounds |
+| 2.24 | `copilot-vision-request: true` header when images detected | ✅ | All backends |
+| 2.25 | `"Thinking..."` placeholder for opencode compatibility | ✅ | Default thinking text |
+| 2.26 | Cache read token separation (Anthropic billing model) | ✅ | InputTokens - CachedTokens |
 
 ### 2B — Anthropic Messages → Responses API Backend
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 2.27 | Full message/tool/system → Responses format translation | ⬜ | |
-| 2.28 | Temperature forced to 1 for reasoning models | ⬜ | |
-| 2.29 | `max_output_tokens` minimum 12800 | ⬜ | |
-| 2.30 | Reasoning effort from config | ⬜ | |
-| 2.31 | Reasoning config (`include`, `store`, `parallel_tool_calls`) | ⬜ | |
-| 2.32 | User ID parsing for `safety_identifier` + `prompt_cache_key` | ⬜ | |
-| 2.33 | Codex phase assignment (`commentary`/`final_answer` for gpt-5.3-codex) | ⬜ | |
-| 2.34 | Thinking block → reasoning item conversion (signature `@` encoding) | ⬜ | |
-| 2.35 | Tool result → `function_call_output` conversion | ⬜ | |
-| 2.36 | Image content → `input_image` conversion | ⬜ | |
-| 2.37 | Non-streaming Responses → Anthropic translation | ⬜ | |
-| 2.38 | Streaming Responses → Anthropic SSE translation | ⬜ | |
-| 2.39 | Infinite whitespace detection guard (20 char limit) | ⬜ | |
-| 2.40 | Stream completion detection | ⬜ | |
-| 2.41 | Function call argument parsing with fallback | ⬜ | |
+| 2.27 | Full message/tool/system → Responses format translation | ✅ | translateToResponses |
+| 2.28 | Temperature forced to 1 for reasoning models | ✅ | |
+| 2.29 | `max_output_tokens` minimum 12800 | ✅ | |
+| 2.30 | Reasoning effort from config | ✅ | Default "high", config Phase 3 |
+| 2.31 | Reasoning config (`include`, `store`, `parallel_tool_calls`) | ✅ | |
+| 2.32 | User ID parsing for `safety_identifier` + `prompt_cache_key` | ✅ | parseUserIDIntoPayload |
+| 2.33 | Codex phase assignment (`commentary`/`final_answer` for gpt-5.3-codex) | ✅ | |
+| 2.34 | Thinking block → reasoning item conversion (signature `@` encoding) | ✅ | SplitN on `@` |
+| 2.35 | Tool result → `function_call_output` conversion | ✅ | is_error → "incomplete" |
+| 2.36 | Image content → `input_image` conversion | ✅ | buildResponsesContent |
+| 2.37 | Non-streaming Responses → Anthropic translation | ✅ | translateResponsesResultToAnthropic |
+| 2.38 | Streaming Responses → Anthropic SSE translation | ✅ | ResponsesStreamState |
+| 2.39 | Infinite whitespace detection guard (20 char limit) | ✅ | wsRunLength tracking |
+| 2.40 | Stream completion detection | ✅ | messageCompleted flag |
+| 2.41 | Function call argument parsing with fallback | ✅ | parseToolInput (array/raw fallback) |
 
 ### 2C — Native Messages API Passthrough
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 2.42 | Direct forwarding for models supporting `/v1/messages` | ⬜ | |
-| 2.43 | Thinking block filtering before forwarding | ⬜ | |
-| 2.44 | Adaptive thinking support with effort mapping | ⬜ | |
-| 2.45 | `anthropic-beta` header filtering (remove `claude-code-20250219`) | ⬜ | |
-| 2.46 | `anthropic-beta` auto-injection for thinking | ⬜ | |
-| 2.47 | Vision detection + header | ⬜ | |
-| 2.48 | Streaming / non-streaming passthrough | ⬜ | |
+| 2.42 | Direct forwarding for models supporting `/v1/messages` | ✅ | handleWithMessagesAPI |
+| 2.43 | Thinking block filtering before forwarding | ✅ | filterThinkingBlocks |
+| 2.44 | Adaptive thinking support with effort mapping | ✅ | applyAdaptiveThinking |
+| 2.45 | `anthropic-beta` header filtering (remove `claude-code-20250219`) | ✅ | filterBetaHeader |
+| 2.46 | `anthropic-beta` auto-injection for thinking | ✅ | |
+| 2.47 | Vision detection + header | ✅ | hasVision + header |
+| 2.48 | Streaming / non-streaming passthrough | ✅ | Direct SSE forwarding |
 
 ### 2D — OpenAI Responses Endpoint (Passthrough)
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 2.49 | `POST /responses` + `/v1/responses` route | ⬜ | |
-| 2.50 | Model support validation (400 if unsupported) | ⬜ | |
-| 2.51 | `apply_patch` custom tool → function tool conversion | ⬜ | |
-| 2.52 | `web_search` tool removal | ⬜ | |
-| 2.53 | Stream ID synchronization (fix `@ai-sdk/openai` crashes) | ⬜ | |
-| 2.54 | `service_tier` nullification | ⬜ | |
-| 2.55 | Vision detection in Responses payloads | ⬜ | |
-| 2.56 | Agent initiator detection (Responses) | ⬜ | |
-| 2.57 | Non-streaming / streaming passthrough | ⬜ | |
+| 2.49 | `POST /responses` + `/v1/responses` route | ✅ | |
+| 2.50 | Model support validation (400 if unsupported) | ✅ | |
+| 2.51 | `apply_patch` custom tool → function tool conversion | ✅ | convertApplyPatchTools |
+| 2.52 | `web_search` tool removal | ✅ | removeWebSearchTools |
+| 2.53 | Stream ID synchronization (fix `@ai-sdk/openai` crashes) | ✅ | StreamIDSync |
+| 2.54 | `service_tier` nullification | ✅ | |
+| 2.55 | Vision detection in Responses payloads | ✅ | containsImageRecursive |
+| 2.56 | Agent initiator detection (Responses) | ✅ | detectAgentInResponses |
+| 2.57 | Non-streaming / streaming passthrough | ✅ | With stream ID sync |
 
 ### 2E — Embeddings Endpoint
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 2.58 | `POST /embeddings` + `/v1/embeddings` route | ⬜ | |
-| 2.59 | Embeddings passthrough to Copilot | ⬜ | |
+| 2.58 | `POST /embeddings` + `/v1/embeddings` route | ✅ | |
+| 2.59 | Embeddings passthrough to Copilot | ✅ | |
 
 **Milestone**: Full Anthropic Messages API compatibility with all 3 backends,
 plus OpenAI Responses and Embeddings passthrough.

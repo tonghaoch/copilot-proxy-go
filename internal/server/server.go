@@ -42,6 +42,17 @@ func New(port int) *http.Server {
 	r.Post("/chat/completions", handler.ChatCompletions)
 	r.Post("/v1/chat/completions", handler.ChatCompletions)
 
+	// Messages (Anthropic-compatible)
+	r.Post("/v1/messages", handler.Messages)
+
+	// Responses (OpenAI Responses API)
+	r.Post("/responses", handler.Responses)
+	r.Post("/v1/responses", handler.Responses)
+
+	// Embeddings
+	r.Post("/embeddings", handler.Embeddings)
+	r.Post("/v1/embeddings", handler.Embeddings)
+
 	addr := fmt.Sprintf(":%d", port)
 	slog.Info("server starting", "address", addr)
 

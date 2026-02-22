@@ -75,9 +75,3 @@ func forwardJSON(w http.ResponseWriter, resp *http.Response) {
 	io.Copy(w, resp.Body)
 }
 
-func initiatorStr(isAgent bool) string {
-	if isAgent {
-		return "agent"
-	}
-	return "user"
-}

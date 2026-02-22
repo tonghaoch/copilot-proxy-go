@@ -37,8 +37,14 @@ func FetchModels() ([]state.Model, error) {
 }
 
 // ProxyChatCompletion forwards a chat completion request to the Copilot API.
-// It returns the raw HTTP response for the caller to handle (streaming or not).
+// Used by the /chat/completions passthrough endpoint.
 func ProxyChatCompletion(body []byte, isAgent bool) (*http.Response, error) {
+	return ProxyChatCompletionEx(body, isAgent, false)
+}
+
+// ProxyChatCompletionEx forwards a chat completion request with vision support.
+// Used by the Messages handler when routing through Chat Completions backend.
+func ProxyChatCompletionEx(body []byte, isAgent, vision bool) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating chat completion request: %w", err)
@@ -46,10 +52,90 @@ func ProxyChatCompletion(body []byte, isAgent bool) (*http.Response, error) {
 
 	req.Header = api.BuildCopilotHeadersFromState()
 	api.SetInitiatorHeader(req.Header, isAgent)
+	if vision {
+		req.Header.Set("Copilot-Vision-Request", "true")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("proxying chat completion: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, api.NewHTTPError(resp)
+	}
+
+	return resp, nil
+}
+
+// ProxyMessages forwards a request to the Copilot native Messages API.
+func ProxyMessages(body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/v1/messages"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating messages request: %w", err)
+	}
+
+	req.Header = api.BuildCopilotHeadersFromState()
+	api.SetInitiatorHeader(req.Header, isAgent)
+	if betaHeader != "" {
+		req.Header.Set("Anthropic-Beta", betaHeader)
+	}
+	if vision {
+		req.Header.Set("Copilot-Vision-Request", "true")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("proxying messages: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, api.NewHTTPError(resp)
+	}
+
+	return resp, nil
+}
+
+// ProxyResponses forwards a request to the Copilot Responses API.
+func ProxyResponses(body []byte, isAgent, vision bool) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/responses"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating responses request: %w", err)
+	}
+
+	req.Header = api.BuildCopilotHeadersFromState()
+	api.SetInitiatorHeader(req.Header, isAgent)
+	if vision {
+		req.Header.Set("Copilot-Vision-Request", "true")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("proxying responses: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, api.NewHTTPError(resp)
+	}
+
+	return resp, nil
+}
+
+// ProxyEmbeddings forwards a request to the Copilot Embeddings API.
+func ProxyEmbeddings(body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/embeddings"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating embeddings request: %w", err)
+	}
+
+	req.Header = api.BuildCopilotHeadersFromState()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("proxying embeddings: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
