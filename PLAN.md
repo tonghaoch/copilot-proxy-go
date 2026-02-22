@@ -229,28 +229,28 @@ plus OpenAI Responses and Embeddings passthrough.
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 4.1 | `start` command with all flags (`--port`, `--verbose`, `--account-type`, `--manual`, `--rate-limit`, `--wait`, `--github-token`, `--claude-code`, `--show-token`, `--proxy-env`) | ⬜ | Use `cobra` or `urfave/cli` |
-| 4.2 | `auth` command (standalone device-code flow) | ⬜ | |
-| 4.3 | `check-usage` command (formatted terminal output) | ⬜ | |
-| 4.4 | `debug` command (diagnostic info) | ⬜ | |
-| 4.5 | `debug --json` flag | ⬜ | |
+| 4.1 | `start` command with all flags (`--port`, `--verbose`, `--account-type`, `--manual`, `--rate-limit`, `--wait`, `--github-token`, `--claude-code`, `--show-token`, `--proxy-env`) | ✅ | All 10 flags |
+| 4.2 | `auth` command (standalone device-code flow) | ✅ | With --verbose, --show-token |
+| 4.3 | `check-usage` command (formatted terminal output) | ✅ | Box-formatted with quotas |
+| 4.4 | `debug` command (diagnostic info) | ✅ | Version, runtime, paths, status |
+| 4.5 | `debug --json` flag | ✅ | Structured JSON output |
 
 ### 4B — Shell Integration
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 4.6 | Cross-platform shell detection (bash/zsh/fish/powershell/cmd) | ⬜ | |
-| 4.7 | Env var export script generation per shell syntax | ⬜ | |
-| 4.8 | Claude Code env vars generation (ANTHROPIC_BASE_URL, etc.) | ⬜ | |
-| 4.9 | Clipboard auto-copy (fallback to print) | ⬜ | |
-| 4.10 | Interactive model selection for `--claude-code` | ⬜ | |
+| 4.6 | Cross-platform shell detection (bash/zsh/fish/powershell/cmd) | ✅ | Unix SHELL + Windows wmic |
+| 4.7 | Env var export script generation per shell syntax | ✅ | bash/zsh/fish/powershell/cmd |
+| 4.8 | Claude Code env vars generation (ANTHROPIC_BASE_URL, etc.) | ✅ | 8 env vars |
+| 4.9 | Clipboard auto-copy (fallback to print) | ✅ | pbcopy/xclip/clip |
+| 4.10 | Interactive model selection for `--claude-code` | ✅ | Primary + small model |
 
 ### 4C — Proxy Support
 
 | # | Feature | Status | Notes |
 |---|---------|--------|-------|
-| 4.11 | Per-URL proxy routing from env vars (HTTP_PROXY, etc.) | ⬜ | Go's `http.ProxyFromEnvironment` |
-| 4.12 | `--proxy-env` flag to enable | ⬜ | |
+| 4.11 | Per-URL proxy routing from env vars (HTTP_PROXY, etc.) | ✅ | http.ProxyFromEnvironment |
+| 4.12 | `--proxy-env` flag to enable | ✅ | Sets DefaultClient transport |
 
 **Milestone**: Complete CLI with all subcommands, flags, and Claude Code integration.
 
