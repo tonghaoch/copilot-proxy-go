@@ -4,7 +4,7 @@ Turn your **GitHub Copilot** subscription into a fully compatible **OpenAI** and
 
 A single Go binary that authenticates with GitHub Copilot and exposes standard API endpoints — use it with Claude Code, OpenCode, Cursor, or any tool that speaks OpenAI/Anthropic.
 
-> Go rewrite of [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api).
+> Go rewrite of [ericc-ch/copilot-api](https://github.com/ericc-ch/copilot-api).
 
 ## Features
 
