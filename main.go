@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -113,9 +114,15 @@ func startCmd() *cobra.Command {
 			}
 			state.Global.SetModels(models)
 
+			ids := make([]string, len(models))
+			for i, m := range models {
+				ids[i] = m.ID
+			}
+			sort.Strings(ids)
+
 			fmt.Fprintf(os.Stderr, "\n  Available models (%d):\n", len(models))
-			for _, m := range models {
-				fmt.Fprintf(os.Stderr, "    • %s\n", m.ID)
+			for _, id := range ids {
+				fmt.Fprintf(os.Stderr, "    • %s\n", id)
 			}
 			fmt.Fprintln(os.Stderr)
 
