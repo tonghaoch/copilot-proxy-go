@@ -69,7 +69,7 @@ func extractAPIKey(r *http.Request) string {
 
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("WWW-Authenticate", `Bearer realm="copilot-api"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="copilot-proxy-go"`)
 	w.WriteHeader(http.StatusUnauthorized)
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{

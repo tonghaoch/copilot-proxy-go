@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -172,11 +173,24 @@ func (s *State) FindModel(id string) *Model {
 
 // --- Paths ---
 
-const appName = "copilot-api"
+const appName = "copilot-proxy-go"
 
 func AppDir() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", appName)
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", appName)
+	case "windows":
+		if appData := os.Getenv("LOCALAPPDATA"); appData != "" {
+			return filepath.Join(appData, appName)
+		}
+		return filepath.Join(home, "AppData", "Local", appName)
+	default: // linux and others
+		if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+			return filepath.Join(xdg, appName)
+		}
+		return filepath.Join(home, ".local", "share", appName)
+	}
 }
 
 func TokenPath() string {

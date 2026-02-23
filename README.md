@@ -114,7 +114,10 @@ copilot-proxy-go debug [--json]
 
 ## Configuration
 
-Config file: `~/.local/share/copilot-api/config.json`
+Config file location (run `copilot-proxy-go debug` to see yours):
+- **macOS:** `~/Library/Application Support/copilot-proxy-go/config.json`
+- **Linux:** `~/.local/share/copilot-proxy-go/config.json`
+- **Windows:** `%LOCALAPPDATA%\copilot-proxy-go\config.json`
 
 ```jsonc
 {
