@@ -248,14 +248,6 @@ func SetupAuth(providedToken string) error {
 		slog.Info("GitHub token", "token", githubToken)
 	}
 
-	// Fetch user info
-	login, err := GetUser(githubToken, vsCodeVersion)
-	if err != nil {
-		slog.Warn("failed to fetch user info", "error", err)
-	} else {
-		slog.Info("logged in", "user", login)
-	}
-
 	// Fetch initial Copilot token
 	copilotToken, err := FetchCopilotToken(githubToken, vsCodeVersion)
 	if err != nil {
