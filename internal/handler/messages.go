@@ -8,6 +8,7 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
+	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -32,6 +33,8 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 
 	betaHeader := r.Header.Get("Anthropic-Beta")
 
+	logger.For("messages").Log("model=%s stream=%v initiator=%s", req.Model, req.Stream, initiatorStr(isInitiatorAgent(req.Messages)))
+
 	// Quota optimizations: compact/warmup → small model
 	if changed := applySmallModelIfNeeded(&req, betaHeader); changed {
 		slog.Info("routed to small model", "model", req.Model, "reason", "compact/warmup")
@@ -46,29 +49,29 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	// Look up the model
 	model := state.Global.FindModel(req.Model)
 
-	// Store subagent info for initiator override (used in handlers via context)
+	// Subagent marker → force agent initiator
+	forceAgent := false
 	if subagent != nil {
 		slog.Debug("subagent detected", "agent_id", subagent.AgentID, "agent_type", subagent.AgentType)
-		// Force agent initiator by passing through context
-		r.Header.Set("X-Subagent-Detected", "true")
+		forceAgent = true
 	}
 
 	// Determine backend routing
 	if model != nil && isMessagesSupported(model) {
 		slog.Info("routing to Messages API", "model", req.Model)
-		handleWithMessagesAPI(w, r, &req)
+		handleWithMessagesAPI(w, r, &req, forceAgent, body)
 	} else if model != nil && isResponsesSupported(model) {
 		slog.Info("routing to Responses API", "model", req.Model)
-		handleWithResponsesAPI(w, r, &req)
+		handleWithResponsesAPI(w, r, &req, forceAgent)
 	} else {
 		slog.Info("routing to Chat Completions API", "model", req.Model)
-		handleWithChatCompletions(w, r, &req)
+		handleWithChatCompletions(w, r, &req, forceAgent)
 	}
 }
 
 // handleWithChatCompletions translates Anthropic → OpenAI Chat Completions,
 // proxies the request, and translates the response back.
-func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest) {
+func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool) {
 	extraPrompt := config.GetExtraPrompt(normalizeModelName(req.Model))
 
 	ccReq, err := translateToOpenAI(req, extraPrompt)
@@ -83,7 +86,7 @@ func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *Anth
 		return
 	}
 
-	isAgent := isInitiatorAgent(req.Messages)
+	isAgent := forceAgent || isInitiatorAgent(req.Messages)
 	vision := hasVision(req.Messages)
 
 	slog.Info("chat completions backend", "model", ccReq.Model, "stream", ccReq.Stream,
@@ -156,7 +159,7 @@ func streamChatToAnthropic(w http.ResponseWriter, resp *http.Response, model str
 
 // handleWithResponsesAPI translates Anthropic → Responses API, proxies the
 // request, and translates the response back.
-func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest) {
+func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool) {
 	extraPrompt := config.GetExtraPrompt(normalizeModelName(req.Model))
 
 	payload, err := translateToResponses(req, extraPrompt)
@@ -171,7 +174,7 @@ func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *Anthrop
 		return
 	}
 
-	isAgent := isInitiatorAgent(req.Messages)
+	isAgent := forceAgent || isInitiatorAgent(req.Messages)
 	vision := hasVision(req.Messages)
 
 	slog.Info("responses API backend", "model", payload.Model, "stream", payload.Stream,

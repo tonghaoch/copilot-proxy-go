@@ -18,6 +18,8 @@ type ResponsesPayload struct {
 	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
 	Stream            bool                `json:"stream"`
 	ServiceTier       any                 `json:"service_tier"`
+	SafetyIdentifier  string              `json:"safety_identifier,omitempty"`
+	PromptCacheKey    string              `json:"prompt_cache_key,omitempty"`
 }
 
 type ResponsesReasoning struct {
@@ -33,7 +35,7 @@ type ResponsesInput struct {
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
-	Output           string          `json:"output,omitempty"`
+	Output           any             `json:"output,omitempty"`
 	Status           string          `json:"status,omitempty"`
 	ID               string          `json:"id,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`

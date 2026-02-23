@@ -29,6 +29,7 @@ type AnthropicStreamState struct {
 // NewAnthropicStreamState creates a new stream state.
 func NewAnthropicStreamState(model string) *AnthropicStreamState {
 	return &AnthropicStreamState{
+		blockIndex:    -1,
 		toolCallMap:   make(map[int]int),
 		model:         model,
 		isClaudeModel: isClaude(model),
@@ -281,9 +282,6 @@ func (s *AnthropicStreamState) openThinkingBlock() []SSEEvent {
 		return nil // should close first
 	}
 	s.blockIndex++
-	if !s.hasStarted || s.blockIndex == 0 {
-		s.blockIndex = 0
-	}
 	s.openBlockType = "thinking"
 	return []SSEEvent{{
 		Event: "content_block_start",
@@ -303,9 +301,6 @@ func (s *AnthropicStreamState) openTextBlock() []SSEEvent {
 		return nil
 	}
 	s.blockIndex++
-	if s.blockIndex == 0 {
-		s.blockIndex = 0
-	}
 	s.openBlockType = "text"
 	return []SSEEvent{{
 		Event: "content_block_start",

@@ -30,8 +30,38 @@ func (s *StreamIDSync) Process(eventType, data string) string {
 	case "response.output_item.done":
 		return s.processDone(data)
 	default:
+		return s.patchItemID(data)
+	}
+}
+
+// patchItemID patches the item_id field in events that have output_index,
+// matching the canonical ID from the added event.
+func (s *StreamIDSync) patchItemID(data string) string {
+	var evt struct {
+		OutputIndex *int   `json:"output_index,omitempty"`
+		ItemID      string `json:"item_id,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(data), &evt); err != nil || evt.OutputIndex == nil {
 		return data
 	}
+
+	canonicalID, exists := s.canonicalIDs[*evt.OutputIndex]
+	if !exists || canonicalID == "" {
+		return data
+	}
+
+	// Patch item_id if it differs
+	if evt.ItemID != canonicalID {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(data), &raw); err != nil {
+			return data
+		}
+		raw["item_id"] = canonicalID
+		patched, _ := json.Marshal(raw)
+		return string(patched)
+	}
+
+	return data
 }
 
 func (s *StreamIDSync) processAdded(data string) string {
@@ -48,7 +78,7 @@ func (s *StreamIDSync) processAdded(data string) string {
 	id := evt.Item.ID
 	if id == "" {
 		// Generate synthetic ID
-		id = fmt.Sprintf("oi_%d_%s", evt.OutputIndex, randomHex(16))
+		id = fmt.Sprintf("oi_%d_%s", evt.OutputIndex, randomBase36(16))
 		// Patch the data with the synthetic ID
 		var raw map[string]any
 		json.Unmarshal([]byte(data), &raw)
@@ -93,11 +123,11 @@ func (s *StreamIDSync) processDone(data string) string {
 	return data
 }
 
-func randomHex(n int) string {
-	const hexChars = "0123456789abcdef"
+func randomBase36(n int) string {
+	const base36Chars = "0123456789abcdefghijklmnopqrstuvwxyz"
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = hexChars[rand.Intn(len(hexChars))]
+		b[i] = base36Chars[rand.Intn(len(base36Chars))]
 	}
 	return string(b)
 }

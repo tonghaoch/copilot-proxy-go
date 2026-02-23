@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+)
+
+var (
+	claudeSonnet4Re = regexp.MustCompile(`^claude-sonnet-4-.*`)
+	claudeOpus4Re   = regexp.MustCompile(`^claude-opus-4-.*`)
 )
 
 // initiatorStr returns "agent" or "user".
@@ -23,12 +29,20 @@ func isClaude(model string) bool {
 }
 
 // normalizeModelName strips version suffixes from Claude model names.
+// Uses specific regexes for known models, falls back to generic date stripping.
 // e.g. "claude-sonnet-4-20250514" → "claude-sonnet-4"
 func normalizeModelName(model string) string {
 	if !isClaude(model) {
 		return model
 	}
-	// Strip date suffixes like -20250514
+	// Specific model patterns
+	if claudeSonnet4Re.MatchString(model) {
+		return "claude-sonnet-4"
+	}
+	if claudeOpus4Re.MatchString(model) {
+		return "claude-opus-4"
+	}
+	// Generic fallback: strip date suffixes like -20250514
 	parts := strings.Split(model, "-")
 	var result []string
 	for _, p := range parts {

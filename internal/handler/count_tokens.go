@@ -38,14 +38,15 @@ func CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count := estimateTokens(ccReq, model, req.Model, r.Header.Get("Anthropic-Beta"))
+	anthropicBeta := r.Header.Get("Anthropic-Beta")
+	count := estimateTokens(ccReq, model, req.Model, req.Tools, anthropicBeta)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(CountTokensResponse{InputTokens: count})
 }
 
 // estimateTokens estimates the total token count for a chat completion request.
-func estimateTokens(req *ChatCompletionRequest, model *state.Model, modelID, betaHeader string) int {
+func estimateTokens(req *ChatCompletionRequest, model *state.Model, modelID string, anthropicTools []AnthropicTool, anthropicBeta string) int {
 	total := 0
 
 	// Count message tokens
@@ -79,9 +80,9 @@ func estimateTokens(req *ChatCompletionRequest, model *state.Model, modelID, bet
 			total += 5 // tool definition overhead
 		}
 
-		// Tool system prompt adjustment
+		// Tool system prompt adjustment: only when anthropic-beta header is present
 		if isClaude(modelID) {
-			if !isToolOnlyBeta(betaHeader) {
+			if anthropicBeta != "" && !isToolOnly(anthropicTools) {
 				total += 346
 			}
 		} else if strings.Contains(strings.ToLower(modelID), "grok") {
@@ -158,7 +159,22 @@ func countImageTokens(content any) int {
 	return count
 }
 
-// isToolOnlyBeta checks if the beta header indicates MCP-only or Skill-only tools.
-func isToolOnlyBeta(beta string) bool {
-	return strings.Contains(beta, "mcp-only") || strings.Contains(beta, "skill-only")
+// isToolOnly checks if the tools list consists only of MCP tools (prefixed with
+// "mcp__") or a single "Skill" tool. In these cases the standard tool system
+// prompt is not injected.
+func isToolOnly(tools []AnthropicTool) bool {
+	if len(tools) == 0 {
+		return false
+	}
+	// Single "Skill" tool
+	if len(tools) == 1 && tools[0].Name == "Skill" {
+		return true
+	}
+	// All tools are MCP tools
+	for _, t := range tools {
+		if !strings.HasPrefix(t.Name, "mcp__") {
+			return false
+		}
+	}
+	return true
 }

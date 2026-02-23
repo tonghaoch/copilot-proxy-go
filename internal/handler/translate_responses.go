@@ -3,9 +3,15 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
+)
+
+var (
+	safetyIdentifierRe = regexp.MustCompile(`user_([^_]+)_account`)
+	promptCacheKeyRe   = regexp.MustCompile(`_session_(.+)$`)
 )
 
 // translateToResponses converts an Anthropic request to a Responses API payload.
@@ -20,15 +26,9 @@ func translateToResponses(req *AnthropicRequest, extraPrompt string) (*Responses
 		input = append(input, items...)
 	}
 
-	// Instructions from system prompt
-	instructions := ParseSystemPrompt(req.System)
-	if extraPrompt != "" {
-		if instructions != "" {
-			instructions += "\n\n" + extraPrompt
-		} else {
-			instructions = extraPrompt
-		}
-	}
+	// Instructions from system prompt (Responses API joins blocks with space,
+	// and appends extraPrompt to the first block before joining — matching TS)
+	instructions := parseSystemPromptForResponses(req.System, extraPrompt)
 
 	// Max output tokens (minimum 12800)
 	maxOutput := req.MaxTokens
@@ -119,7 +119,7 @@ func translateMsgToResponsesInput(role string, blocks []ContentBlock, model stri
 			items = append(items, ResponsesInput{
 				Type:   "function_call_output",
 				CallID: tr.ToolUseID,
-				Output: getToolResultText(tr.Content),
+				Output: convertToolResultContentForResponses(tr.Content),
 				Status: status,
 			})
 		}
@@ -174,13 +174,15 @@ func translateMsgToResponsesInput(role string, blocks []ContentBlock, model stri
 			}
 		}
 
-		// Add text as a message
+		// Add text as a message (use output_text content type for assistant)
 		if len(textParts) > 0 {
 			text := strings.Join(textParts, "")
+			var content any
+			content = []map[string]string{{"type": "output_text", "text": text}}
 			msgItem := ResponsesInput{
 				Type:    "message",
 				Role:    "assistant",
-				Content: text,
+				Content: content,
 			}
 			// Codex phase assignment
 			if isCodex && strings.Contains(model, "gpt-5.3-codex") {
@@ -237,12 +239,92 @@ func buildResponsesContent(blocks []ContentBlock) any {
 	return parts
 }
 
+// parseSystemPromptForResponses builds the system instructions for the Responses API.
+// It appends extraPrompt to the first block before joining with spaces (matching TS).
+func parseSystemPromptForResponses(raw json.RawMessage, extraPrompt string) string {
+	if raw == nil || len(raw) == 0 {
+		return extraPrompt
+	}
+	// Try as string
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s + extraPrompt
+	}
+	// Try as array of blocks
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for i, b := range blocks {
+			if b.Type == "text" {
+				if i == 0 {
+					parts = append(parts, b.Text+extraPrompt)
+				} else {
+					parts = append(parts, b.Text)
+				}
+			}
+		}
+		result := strings.Join(parts, " ")
+		if result != "" {
+			return result
+		}
+	}
+	return extraPrompt
+}
+
+// convertToolResultContentForResponses converts tool result content to the
+// Responses API format. Preserves array structure (text + images) if content
+// is an array; returns string as-is.
+func convertToolResultContentForResponses(raw json.RawMessage) any {
+	if raw == nil {
+		return ""
+	}
+	// Try as string first
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	// Try as array of content blocks
+	var blocks []ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var result []any
+		for _, b := range blocks {
+			switch b.Type {
+			case "text":
+				result = append(result, map[string]string{
+					"type": "input_text",
+					"text": b.Text,
+				})
+			case "image":
+				if b.Source != nil {
+					url := fmt.Sprintf("data:%s;base64,%s", b.Source.MediaType, b.Source.Data)
+					result = append(result, map[string]any{
+						"type":   "input_image",
+						"url":    url,
+						"detail": "auto",
+					})
+				}
+			}
+		}
+		if len(result) > 0 {
+			return result
+		}
+	}
+	return string(raw)
+}
+
 // parseUserIDIntoPayload extracts safety_identifier and prompt_cache_key
 // from the Anthropic metadata user_id field.
 func parseUserIDIntoPayload(payload *ResponsesPayload, userID string) {
-	// Format: "user_{id}_account" and/or "_session_{key}"
-	// This is used for billing/caching on the Copilot side
-	// We pass it through as-is in the input context
+	// Format: "user_{id}_account_session_{key}"
+	if m := safetyIdentifierRe.FindStringSubmatch(userID); len(m) > 1 {
+		payload.SafetyIdentifier = m[1]
+	}
+	if m := promptCacheKeyRe.FindStringSubmatch(userID); len(m) > 1 {
+		payload.PromptCacheKey = m[1]
+	}
 }
 
 // translateResponsesResultToAnthropic converts a Responses API result to Anthropic format.

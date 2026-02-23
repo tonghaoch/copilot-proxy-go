@@ -105,6 +105,8 @@ func BuildGitHubHeaders(githubToken, vsCodeVersion string) http.Header {
 	h.Set("Editor-Version", "vscode/"+vsCodeVersion)
 	h.Set("Editor-Plugin-Version", "copilot-chat/"+CopilotChatVersion)
 	h.Set("User-Agent", "GitHubCopilotChat/"+CopilotChatVersion)
+	h.Set("X-Github-Api-Version", GitHubAPIVersion)
+	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	return h
 }
 

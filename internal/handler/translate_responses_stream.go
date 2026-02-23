@@ -2,8 +2,8 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
-	"unicode"
 )
 
 // ResponsesStreamState tracks the state of the streaming translation
@@ -21,6 +21,12 @@ type ResponsesStreamState struct {
 
 	// For combining reasoning summaries
 	reasoningSummaryBlock map[int]int // output_index -> block index
+
+	// Track which blocks have received deltas (for done-event fallback)
+	blockHasDelta map[int]bool
+
+	// Track text block indices by composite key "outputIndex:contentIndex"
+	textBlockByKey map[string]int
 }
 
 // NewResponsesStreamState creates a new stream state.
@@ -31,6 +37,8 @@ func NewResponsesStreamState(model string) *ResponsesStreamState {
 		model:                 model,
 		wsRunLength:           make(map[int]int),
 		reasoningSummaryBlock: make(map[int]int),
+		blockHasDelta:         make(map[int]bool),
+		textBlockByKey:        make(map[string]int),
 	}
 }
 
@@ -232,40 +240,92 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 				Delta: Delta{Type: "thinking_delta", Thinking: evt.Delta},
 			},
 		})
+		s.blockHasDelta[blockIdx] = true
+
+	case "response.reasoning_summary_text.done":
+		var evt struct {
+			OutputIndex int    `json:"output_index"`
+			Text        string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			return nil, err
+		}
+		blockIdx, exists := s.reasoningSummaryBlock[evt.OutputIndex]
+		if !exists {
+			// Open thinking block if needed
+			events = append(events, s.closeCurrentBlock()...)
+			s.blockIndex++
+			blockIdx = s.blockIndex
+			s.reasoningSummaryBlock[evt.OutputIndex] = blockIdx
+			s.openBlockType = "thinking"
+			events = append(events, SSEEvent{
+				Event: "content_block_start",
+				Data: ContentBlockStartEvent{
+					Type:  "content_block_start",
+					Index: blockIdx,
+					ContentBlock: ContentBlock{
+						Type:     "thinking",
+						Thinking: "",
+					},
+				},
+			})
+		}
+		// Emit full text if no deltas were received for this block
+		if evt.Text != "" && !s.blockHasDelta[blockIdx] {
+			events = append(events, SSEEvent{
+				Event: "content_block_delta",
+				Data: ContentBlockDeltaEvent{
+					Type:  "content_block_delta",
+					Index: blockIdx,
+					Delta: Delta{Type: "thinking_delta", Thinking: evt.Text},
+				},
+			})
+		}
 
 	case "response.output_text.delta":
 		var evt struct {
-			Delta string `json:"delta"`
+			OutputIndex  int    `json:"output_index"`
+			ContentIndex int    `json:"content_index"`
+			Delta        string `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return nil, err
 		}
 
-		if s.openBlockType != "text" {
-			events = append(events, s.closeCurrentBlock()...)
-			s.blockIndex++
-			s.openBlockType = "text"
-			events = append(events, SSEEvent{
-				Event: "content_block_start",
-				Data: ContentBlockStartEvent{
-					Type:  "content_block_start",
-					Index: s.blockIndex,
-					ContentBlock: ContentBlock{
-						Type: "text",
-						Text: "",
-					},
-				},
-			})
-		}
+		blockIdx := s.openOrGetTextBlock(evt.OutputIndex, evt.ContentIndex, &events)
 
 		events = append(events, SSEEvent{
 			Event: "content_block_delta",
 			Data: ContentBlockDeltaEvent{
 				Type:  "content_block_delta",
-				Index: s.blockIndex,
+				Index: blockIdx,
 				Delta: Delta{Type: "text_delta", Text: evt.Delta},
 			},
 		})
+		s.blockHasDelta[blockIdx] = true
+
+	case "response.output_text.done":
+		var evt struct {
+			OutputIndex  int    `json:"output_index"`
+			ContentIndex int    `json:"content_index"`
+			Text         string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			return nil, err
+		}
+
+		blockIdx := s.openOrGetTextBlock(evt.OutputIndex, evt.ContentIndex, &events)
+		// Emit full text if no deltas were received for this block
+		if evt.Text != "" && !s.blockHasDelta[blockIdx] {
+			events = append(events, SSEEvent{
+				Event: "content_block_delta",
+				Data: ContentBlockDeltaEvent{
+					Type:  "content_block_delta",
+					Index: blockIdx,
+					Delta: Delta{Type: "text_delta", Text: evt.Text},
+				},
+			})
+		}
 
 	case "response.function_call_arguments.delta":
 		var evt struct {
@@ -276,10 +336,10 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 			return nil, err
 		}
 
-		// Infinite whitespace detection
+		// Infinite whitespace detection (only \r, \n, \t — not regular spaces)
 		wsCount := s.wsRunLength[evt.OutputIndex]
 		for _, r := range evt.Delta {
-			if unicode.IsSpace(r) {
+			if r == '\r' || r == '\n' || r == '\t' {
 				wsCount++
 			} else {
 				wsCount = 0
@@ -312,10 +372,30 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 					Delta: Delta{Type: "input_json_delta", PartialJSON: evt.Delta},
 				},
 			})
+			s.blockHasDelta[blockIdx] = true
 		}
 
 	case "response.function_call_arguments.done":
-		// No-op: arguments already streamed via deltas
+		var evt struct {
+			OutputIndex int    `json:"output_index"`
+			Arguments   string `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			return nil, err
+		}
+		// Emit final arguments if no deltas were received for this block
+		if blockIdx, ok := s.toolCallBlocks[evt.OutputIndex]; ok {
+			if evt.Arguments != "" && !s.blockHasDelta[blockIdx] {
+				events = append(events, SSEEvent{
+					Event: "content_block_delta",
+					Data: ContentBlockDeltaEvent{
+						Type:  "content_block_delta",
+						Index: blockIdx,
+						Delta: Delta{Type: "input_json_delta", PartialJSON: evt.Arguments},
+					},
+				})
+			}
+		}
 
 	case "response.completed", "response.incomplete":
 		s.messageCompleted = true
@@ -393,6 +473,33 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 	}
 
 	return events, nil
+}
+
+// openOrGetTextBlock opens or retrieves a text block for the given output/content index.
+func (s *ResponsesStreamState) openOrGetTextBlock(outputIndex, contentIndex int, events *[]SSEEvent) int {
+	key := fmt.Sprintf("%d:%d", outputIndex, contentIndex)
+	if blockIdx, ok := s.textBlockByKey[key]; ok {
+		return blockIdx
+	}
+
+	// Open a new text block
+	*events = append(*events, s.closeCurrentBlock()...)
+	s.blockIndex++
+	blockIdx := s.blockIndex
+	s.textBlockByKey[key] = blockIdx
+	s.openBlockType = "text"
+	*events = append(*events, SSEEvent{
+		Event: "content_block_start",
+		Data: ContentBlockStartEvent{
+			Type:  "content_block_start",
+			Index: blockIdx,
+			ContentBlock: ContentBlock{
+				Type: "text",
+				Text: "",
+			},
+		},
+	})
+	return blockIdx
 }
 
 func (s *ResponsesStreamState) closeCurrentBlock() []SSEEvent {

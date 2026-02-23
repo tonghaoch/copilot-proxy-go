@@ -10,7 +10,17 @@ import (
 
 const interleavedThinkingPrompt = `
 <interleaved_thinking_protocol>
-You MUST think after receiving a tool result. After EVERY tool result, you MUST produce a thinking block before producing any other content. This is NON-NEGOTIABLE.
+You MUST interleave your thinking throughout your response. Follow these RULES:
+
+RULES:
+1. You MUST think after receiving a tool result. After EVERY tool result, you MUST produce a thinking block before producing any other content. This is NON-NEGOTIABLE.
+2. Your thinking blocks must contain genuine reasoning about the tool result — minimum 3-5 sentences analyzing what was returned and planning next steps.
+3. When you receive a tool result, your thinking MUST:
+   - Analyze the result and what it means
+   - Consider whether the result changes your approach
+   - Plan what to do next based on the result
+4. Do NOT produce empty or placeholder thinking. Every thinking block must contain substantive reasoning.
+5. Do NOT skip thinking after ANY tool result, even if the result is simple or expected.
 </interleaved_thinking_protocol>`
 
 const interleavedThinkingReminder = `<system-reminder>you MUST follow interleaved_thinking_protocol</system-reminder>`
@@ -321,12 +331,12 @@ func clampThinkingBudget(modelID string, budget, maxTokens int) int {
 }
 
 // translateToAnthropic converts an OpenAI Chat Completion response to an
-// Anthropic response.
+// Anthropic response. Processes all choices, not just the first.
 func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 	var content []ContentBlock
+	bestStopReason := "end_turn"
 
-	if len(resp.Choices) > 0 {
-		choice := resp.Choices[0]
+	for _, choice := range resp.Choices {
 		msg := choice.Message
 
 		// Thinking/reasoning
@@ -361,6 +371,18 @@ func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 				Input: inputRaw,
 			})
 		}
+
+		// Pick the best stop reason: tool_calls > stop > others
+		reason := mapStopReason(choice.FinishReason)
+		if reason == "tool_use" {
+			bestStopReason = "tool_use"
+		} else if reason == "end_turn" && bestStopReason != "tool_use" {
+			bestStopReason = "end_turn"
+		} else if bestStopReason == "end_turn" {
+			// Keep end_turn as default unless we see something more specific
+		} else {
+			bestStopReason = reason
+		}
 	}
 
 	// Ensure at least one content block
@@ -370,7 +392,6 @@ func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 
 	// Usage
 	usage := AnthropicUsage{}
-	stopReason := "end_turn"
 	if resp.Usage != nil {
 		usage.InputTokens = resp.Usage.PromptTokens
 		usage.OutputTokens = resp.Usage.CompletionTokens
@@ -380,17 +401,14 @@ func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 			usage.InputTokens -= cached
 		}
 	}
-	if len(resp.Choices) > 0 {
-		stopReason = mapStopReason(resp.Choices[0].FinishReason)
-	}
 
 	return &AnthropicResponse{
-		ID:       resp.ID,
-		Type:     "message",
-		Role:     "assistant",
-		Content:  content,
-		Model:    resp.Model,
-		StopReason: stopReason,
-		Usage:    usage,
+		ID:         resp.ID,
+		Type:       "message",
+		Role:       "assistant",
+		Content:    content,
+		Model:      resp.Model,
+		StopReason: bestStopReason,
+		Usage:      usage,
 	}
 }

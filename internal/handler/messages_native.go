@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,20 +8,30 @@ import (
 	"strings"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
-func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest) {
+// rawBody is the original request bytes to preserve unknown fields.
+func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rawBody []byte) {
+	// Parse into map to preserve unknown fields
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		api.ForwardError(w, err)
+		return
+	}
+
 	// Filter thinking blocks in assistant messages
-	filteredReq := filterThinkingBlocks(req)
+	filterThinkingBlocksInMap(payload, req)
 
 	// Set up adaptive thinking if supported
-	applyAdaptiveThinking(filteredReq)
+	applyAdaptiveThinkingInMap(payload, req)
 
-	// Marshal the filtered request
-	body, err := json.Marshal(filteredReq)
+	// Marshal the modified payload
+	body, err := json.Marshal(payload)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -41,7 +50,7 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	vision := hasVision(req.Messages)
 
 	// Initiator detection
-	isAgent := isInitiatorAgent(req.Messages)
+	isAgent := forceAgent || isInitiatorAgent(req.Messages)
 
 	slog.Info("messages API (native)", "model", req.Model, "stream", req.Stream, "vision", vision)
 
@@ -80,27 +89,32 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	}
 }
 
-// filterThinkingBlocks removes invalid thinking blocks from assistant messages
-// before forwarding to the Messages API.
-func filterThinkingBlocks(req *AnthropicRequest) *AnthropicRequest {
-	// Deep copy the request to avoid mutating the original
-	copied := *req
-	copied.Messages = make([]AnthropicMsg, len(req.Messages))
+// filterThinkingBlocksInMap filters thinking blocks in assistant messages
+// directly in the map representation to preserve unknown fields.
+func filterThinkingBlocksInMap(payload map[string]any, req *AnthropicRequest) {
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		return
+	}
 
-	for i, msg := range req.Messages {
-		if msg.Role != "assistant" {
-			copied.Messages[i] = msg
+	for i, msgAny := range messages {
+		msg, ok := msgAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
 			continue
 		}
 
-		blocks := ParseMessageContent(msg.Content)
+		// Get the parsed blocks from the structured request
+		if i >= len(req.Messages) {
+			continue
+		}
+		blocks := ParseMessageContent(req.Messages[i].Content)
 		var filtered []ContentBlock
 		for _, b := range blocks {
 			if b.Type == "thinking" {
-				// Filter out:
-				// - Empty thinking
-				// - "Thinking..." placeholder
-				// - Signatures containing @ (Responses API encoding)
 				if b.Thinking == "" || b.Thinking == "Thinking..." {
 					continue
 				}
@@ -118,25 +132,38 @@ func filterThinkingBlocks(req *AnthropicRequest) *AnthropicRequest {
 			filtered = []ContentBlock{{Type: "text", Text: ""}}
 		}
 
-		filteredJSON, _ := json.Marshal(filtered)
-		copied.Messages[i] = AnthropicMsg{
-			Role:    msg.Role,
-			Content: filteredJSON,
-		}
+		msg["content"] = filtered
 	}
-
-	return &copied
 }
 
-// applyAdaptiveThinking modifies the request to use adaptive thinking
-// if the model supports it.
-func applyAdaptiveThinking(req *AnthropicRequest) {
-	// For models that support adaptive thinking, convert the thinking config
-	// This is handled by setting the thinking type and output_config
-	// The actual model lookup and capability check would use state.Global.FindModel
-	// For now, we set adaptive thinking when a thinking budget is present
-	if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
-		req.Thinking.Type = "adaptive"
+// applyAdaptiveThinkingInMap modifies the thinking config and output_config
+// in the map representation. Only applies when the model supports adaptive thinking.
+func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest) {
+	model := state.Global.FindModel(req.Model)
+	if model == nil || !model.Capabilities.Supports.AdaptiveThinking {
+		return
+	}
+
+	// Set thinking type to adaptive
+	payload["thinking"] = map[string]string{"type": "adaptive"}
+
+	// Set output_config effort
+	effort := config.GetReasoningEffort(normalizeModelName(req.Model))
+	mapped := mapEffort(effort)
+	if mapped != "" {
+		payload["output_config"] = map[string]string{"effort": mapped}
+	}
+}
+
+// mapEffort maps config reasoning effort values to Anthropic output_config effort.
+func mapEffort(effort string) string {
+	switch effort {
+	case "xhigh":
+		return "max"
+	case "none", "minimal":
+		return "low"
+	default:
+		return effort
 	}
 }
 
@@ -156,36 +183,3 @@ func filterBetaHeader(header string) string {
 	return strings.Join(filtered, ",")
 }
 
-// ProxyMessagesPayload is used to forward the filtered request body
-// to Copilot's native messages endpoint. This is a convenience that
-// re-encodes the body from the AnthropicRequest struct. For a true
-// passthrough (preserving unknown fields), we could use json.RawMessage
-// based approach.
-func buildMessagesBody(req *AnthropicRequest) []byte {
-	body, _ := json.Marshal(req)
-	return body
-}
-
-// forwardWithModifiedBody sends a request with a modified body while
-// preserving the original request structure.
-func forwardWithModifiedBody(original []byte, modifications map[string]any) ([]byte, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(original, &payload); err != nil {
-		return nil, err
-	}
-	for k, v := range modifications {
-		payload[k] = v
-	}
-	return json.Marshal(payload)
-}
-
-// readBody reads and returns the request body, and also returns a new
-// reader for the body so it can be read again.
-func readBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, nil
-}

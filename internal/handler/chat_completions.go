@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 )
 
@@ -22,6 +23,8 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		api.ForwardError(w, err)
 		return
 	}
+
+	logger.For("chat-completions").Log("stream=%v initiator=%s", isStream, initiatorStr(isAgent))
 
 	// Log token count estimate
 	var parsed struct {

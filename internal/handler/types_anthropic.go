@@ -19,6 +19,7 @@ type AnthropicRequest struct {
 	Tools         []AnthropicTool  `json:"tools,omitempty"`
 	ToolChoice    json.RawMessage  `json:"tool_choice,omitempty"`
 	Thinking      *ThinkingConfig  `json:"thinking,omitempty"`
+	OutputConfig  *OutputConfig    `json:"output_config,omitempty"`
 }
 
 type AnthropicMeta struct {
@@ -28,6 +29,10 @@ type AnthropicMeta struct {
 type ThinkingConfig struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens"`
+}
+
+type OutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // AnthropicMsg represents a message in the Anthropic format.
@@ -207,3 +212,5 @@ func ParseSystemPrompt(raw json.RawMessage) string {
 	}
 	return ""
 }
+
+

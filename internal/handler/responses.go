@@ -8,6 +8,7 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
+	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -61,6 +62,7 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	vision := detectVisionInResponses(payload)
 	isAgent := detectAgentInResponses(payload)
 
+	logger.For("responses").Log("model=%s stream=%v initiator=%s vision=%v", modelID, isStream, initiatorStr(isAgent), vision)
 	slog.Info("responses passthrough", "model", modelID, "stream", isStream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
 
@@ -136,8 +138,12 @@ func convertApplyPatchTools(tools []any) []any {
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"input": map[string]string{"type": "string"},
+						"input": map[string]string{
+							"type":        "string",
+							"description": "The entire contents of the apply_patch command",
+						},
 					},
+					"required": []string{"input"},
 				},
 				"strict": false,
 			})

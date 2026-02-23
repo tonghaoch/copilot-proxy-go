@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -266,11 +264,24 @@ func checkUsageCmd() *cobra.Command {
 					if unlimited, _ := s["unlimited"].(bool); unlimited {
 						fmt.Println("    Unlimited")
 					} else {
-						if remaining, ok := s["remaining"]; ok {
-							fmt.Printf("    Remaining: %v\n", remaining)
-						}
-						if pct, ok := s["percent_remaining"]; ok {
-							fmt.Printf("    Percent remaining: %v%%\n", pct)
+						total, hasTotal := toInt(s["total"])
+						remaining, hasRemaining := toInt(s["remaining"])
+						if hasTotal && hasRemaining {
+							used := total - remaining
+							pctUsed := float64(0)
+							pctRemaining := float64(0)
+							if total > 0 {
+								pctUsed = float64(used) / float64(total) * 100
+								pctRemaining = float64(remaining) / float64(total) * 100
+							}
+							fmt.Printf("    %d/%d (%.0f%% used, %.0f%% remaining)\n", used, total, pctUsed, pctRemaining)
+						} else {
+							if hasRemaining {
+								fmt.Printf("    Remaining: %d\n", remaining)
+							}
+							if pct, ok := s["percent_remaining"]; ok {
+								fmt.Printf("    Percent remaining: %v%%\n", pct)
+							}
 						}
 					}
 				}
@@ -340,6 +351,20 @@ func debugCmd() *cobra.Command {
 }
 
 // --- helpers ---
+
+// toInt converts an any value (typically float64 from JSON) to int.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
 
 func setupLogging(verbose bool) {
 	level := slog.LevelInfo
@@ -425,33 +450,3 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	return nil
 }
 
-// proxyFromEnv returns a proxy URL for the given request, or nil.
-// This is used by Go's http.Transport.Proxy field.
-func proxyFromEnv(req *http.Request) (*url.URL, error) {
-	return http.ProxyFromEnvironment(req)
-}
-
-// isInteractiveShell checks if stdin is a terminal for interactive prompts.
-func isInteractiveShell() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
-}
-
-// shortenModelList returns a comma-separated list of model IDs, truncated.
-func shortenModelList(models []state.Model, max int) string {
-	if len(models) == 0 {
-		return "(none)"
-	}
-	ids := make([]string, 0, max)
-	for i, m := range models {
-		if i >= max {
-			ids = append(ids, fmt.Sprintf("... +%d more", len(models)-max))
-			break
-		}
-		ids = append(ids, m.ID)
-	}
-	return strings.Join(ids, ", ")
-}

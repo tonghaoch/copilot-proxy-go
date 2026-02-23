@@ -11,6 +11,8 @@ import (
 const compactPrefix = "You are a helpful AI assistant tasked with summarizing conversations"
 
 // isCompactRequest detects Claude Code's "compact" requests that summarize conversations.
+// Note: TS explicitly checks both string format and array format (system.some(msg => msg.text.startsWith(...))).
+// Our approach works because ParseSystemPrompt flattens both formats to a single string.
 func isCompactRequest(req *AnthropicRequest) bool {
 	systemText := ParseSystemPrompt(req.System)
 	return strings.HasPrefix(systemText, compactPrefix)
@@ -58,16 +60,19 @@ func mergeToolResultBlocks(req *AnthropicRequest) {
 
 		var toolResults []int
 		var textBlocks []int
+		valid := true
 		for j, b := range blocks {
 			switch b.Type {
 			case "tool_result":
 				toolResults = append(toolResults, j)
 			case "text":
 				textBlocks = append(textBlocks, j)
+			default:
+				valid = false
 			}
 		}
 
-		if len(toolResults) == 0 || len(textBlocks) == 0 {
+		if !valid || len(toolResults) == 0 || len(textBlocks) == 0 {
 			continue
 		}
 
@@ -108,10 +113,28 @@ func mergeToolResultBlocks(req *AnthropicRequest) {
 }
 
 // mergeTextIntoToolResult appends text to a tool_result's content.
+// Preserves array structure when content is already an array of blocks.
 func mergeTextIntoToolResult(tr *ContentBlock, text string) {
+	if tr.Content == nil {
+		textJSON, _ := json.Marshal(text)
+		tr.Content = textJSON
+		return
+	}
+
+	// Try to parse as array of content blocks
+	var blocks []ContentBlock
+	if err := json.Unmarshal(tr.Content, &blocks); err == nil {
+		// Content is an array — append the text block
+		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+		merged, _ := json.Marshal(blocks)
+		tr.Content = merged
+		return
+	}
+
+	// Content is a string — join with separator
 	existing := getToolResultText(tr.Content)
 	if existing != "" {
-		text = existing + "\n" + text
+		text = existing + "\n\n" + text
 	}
 	textJSON, _ := json.Marshal(text)
 	tr.Content = textJSON
