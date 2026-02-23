@@ -46,7 +46,7 @@ func New(opts Options) *http.Server {
 	if opts.RateLimitSeconds > 0 {
 		rl := middleware.NewRateLimiter(opts.RateLimitSeconds, opts.RateLimitWait)
 		r.Use(rl.Middleware)
-		slog.Info("rate limiting enabled", "seconds", opts.RateLimitSeconds, "wait", opts.RateLimitWait)
+		slog.Info(fmt.Sprintf("rate limiting enabled: %ds (wait=%v)", opts.RateLimitSeconds, opts.RateLimitWait))
 	}
 
 	// Manual approval (if enabled)
@@ -82,7 +82,6 @@ func New(opts Options) *http.Server {
 	r.Post("/v1/embeddings", handler.Embeddings)
 
 	addr := fmt.Sprintf(":%d", opts.Port)
-	slog.Info("server starting", "address", addr)
 
 	return &http.Server{
 		Addr:         addr,
@@ -99,11 +98,7 @@ func requestLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", ww.Status(),
-			"duration", time.Since(start).String(),
-		)
+		slog.Info(fmt.Sprintf("%s %s %d %s",
+			r.Method, r.URL.Path, ww.Status(), time.Since(start).Round(time.Millisecond)))
 	})
 }

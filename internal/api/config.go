@@ -68,7 +68,6 @@ func FetchVSCodeVersion() string {
 	}
 
 	version := string(matches[1])
-	slog.Info("fetched VS Code version", "version", version)
 	return version
 }
 

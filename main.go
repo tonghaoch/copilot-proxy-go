@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -67,14 +69,14 @@ func startCmd() *cobra.Command {
 			state.Global.SetShowToken(showToken)
 			state.Global.SetVerbose(verbose)
 
-			slog.Info("copilot-proxy-go", "version", version)
+			slog.Info("copilot-proxy-go v" + version)
 
 			if err := state.EnsurePaths(); err != nil {
 				return fmt.Errorf("failed to create app directories: %w", err)
 			}
 
 			if err := config.Load(); err != nil {
-				slog.Warn("failed to load config, using defaults", "error", err)
+				slog.Warn("failed to load config, using defaults: " + err.Error())
 			}
 			config.MergeDefaults()
 
@@ -94,8 +96,9 @@ func startCmd() *cobra.Command {
 			}()
 
 			// VS Code version
-			slog.Info("fetching VS Code version...")
-			state.Global.SetVSCodeVersion(api.FetchVSCodeVersion())
+			vsVer := api.FetchVSCodeVersion()
+			state.Global.SetVSCodeVersion(vsVer)
+			slog.Info("VS Code version: " + vsVer)
 
 			// Auth
 			if err := auth.SetupAuth(githubToken); err != nil {
@@ -103,18 +106,18 @@ func startCmd() *cobra.Command {
 			}
 
 			// Models
-			slog.Info("fetching available models...")
+			slog.Info("fetching models...")
 			models, err := service.FetchModels()
 			if err != nil {
 				return fmt.Errorf("failed to fetch models: %w", err)
 			}
 			state.Global.SetModels(models)
 
-			ids := make([]string, len(models))
-			for i, m := range models {
-				ids[i] = m.ID
+			fmt.Fprintf(os.Stderr, "\n  Available models (%d):\n", len(models))
+			for _, m := range models {
+				fmt.Fprintf(os.Stderr, "    • %s\n", m.ID)
 			}
-			slog.Info("models loaded", "count", len(models), "ids", ids)
+			fmt.Fprintln(os.Stderr)
 
 			// Claude Code interactive setup
 			if claudeCode {
@@ -371,10 +374,40 @@ func setupLogging(verbose bool) {
 	if verbose {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-	})))
+	slog.SetDefault(slog.New(&cleanHandler{level: level}))
 }
+
+// cleanHandler is a minimal slog handler that prints "HH:MM:SS message key=val ..."
+// without the noisy level prefix.
+type cleanHandler struct {
+	level slog.Level
+}
+
+func (h *cleanHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+func (h *cleanHandler) Handle(_ context.Context, r slog.Record) error {
+	ts := r.Time.Format("15:04:05")
+	var b strings.Builder
+	b.WriteString(ts)
+	b.WriteByte(' ')
+	b.WriteString(r.Message)
+
+	r.Attrs(func(a slog.Attr) bool {
+		b.WriteByte(' ')
+		b.WriteString(a.Key)
+		b.WriteByte('=')
+		b.WriteString(fmt.Sprintf("%v", a.Value.Any()))
+		return true
+	})
+
+	fmt.Fprintln(os.Stderr, b.String())
+	return nil
+}
+
+func (h *cleanHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *cleanHandler) WithGroup(name string) slog.Handler       { return h }
 
 func setupProxy() {
 	transport := &http.Transport{
@@ -386,7 +419,7 @@ func setupProxy() {
 	proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"}
 	for _, v := range proxyVars {
 		if val := os.Getenv(v); val != "" {
-			slog.Info("proxy configured", "var", v, "value", val)
+			slog.Info(fmt.Sprintf("proxy: %s=%s", v, val))
 		}
 	}
 }
