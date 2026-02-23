@@ -15,8 +15,6 @@ A single Go binary that authenticates with GitHub Copilot and exposes standard A
 - **Quota optimization** — auto-routes compact/warmup requests to smaller models to save premium quota
 - **Claude Code integration** — one-command setup with `--claude-code` flag
 - **Token management** — GitHub OAuth device-code flow with automatic Copilot token refresh
-- **Docker ready** — multi-stage Dockerfile included
-
 ## Quick Start
 
 ### 1. Build
@@ -134,23 +132,6 @@ Config file: `~/.local/share/copilot-api/config.json`
   }
 }
 ```
-
-## Docker
-
-### Build and run
-
-```bash
-docker build -t copilot-proxy-go .
-docker run -p 4141:4141 -e GH_TOKEN=your_token copilot-proxy-go
-```
-
-### Docker Compose
-
-```bash
-GH_TOKEN=your_token docker compose up -d
-```
-
-Data is persisted to `./copilot-data/`.
 
 ## How It Works
 
