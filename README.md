@@ -1,5 +1,7 @@
 # copilot-proxy-go
 
+[![Go](https://github.com/tonghaoch/copilot-proxy-go/actions/workflows/go.yml/badge.svg?branch=master)](https://github.com/tonghaoch/copilot-proxy-go/actions/workflows/go.yml)
+
 Turn your **GitHub Copilot** subscription into a fully compatible **OpenAI** and **Anthropic** API server.
 
 A single Go binary that authenticates with GitHub Copilot and exposes standard API endpoints — use it with Claude Code, OpenCode, Cursor, or any tool that speaks OpenAI/Anthropic.
