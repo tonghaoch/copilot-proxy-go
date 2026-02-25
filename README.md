@@ -20,7 +20,7 @@ A single Go binary that authenticates with GitHub Copilot and exposes standard A
 
 ## Dashboard
 
-![Dashboard](demo/copilot-proxy-dashboard.png)
+<img src="demo/copilot-proxy-dashboard.png" alt="Dashboard" width="500" />
 
 ## Quick Start
 
