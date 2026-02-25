@@ -3,166 +3,839 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Copilot Proxy - Usage Dashboard</title>
+<title>Copilot Proxy Dashboard</title>
 <style>
   :root {
-    --bg: #1d2021; --bg1: #282828; --bg2: #3c3836;
-    --fg: #ebdbb2; --fg2: #d5c4a1; --fg3: #a89984;
-    --red: #fb4934; --green: #b8bb26; --yellow: #fabd2f;
-    --blue: #83a598; --purple: #d3869b; --aqua: #8ec07c;
-    --orange: #fe8019;
+    --bg: #0a0e17;
+    --bg-card: rgba(255,255,255,0.04);
+    --bg-card-hover: rgba(255,255,255,0.07);
+    --border: rgba(255,255,255,0.08);
+    --border-hover: rgba(255,255,255,0.15);
+    --fg: #e2e8f0;
+    --fg-dim: #94a3b8;
+    --fg-muted: #64748b;
+    --accent: #38bdf8;
+    --accent-glow: rgba(56,189,248,0.15);
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --ring-size: 100px;
+    --ring-stroke: 8;
   }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
+
   body {
-    font-family: 'Inter', system-ui, sans-serif;
-    background: var(--bg); color: var(--fg);
-    min-height: 100vh; padding: 2rem;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    line-height: 1.5;
   }
-  .container { max-width: 720px; margin: 0 auto; }
-  h1 { color: var(--aqua); margin-bottom: 1.5rem; font-size: 1.5rem; }
-  .input-row {
-    display: flex; gap: 0.5rem; margin-bottom: 1.5rem;
+
+  .backdrop {
+    position: fixed; inset: 0; z-index: -1;
+    background:
+      radial-gradient(ellipse 60% 40% at 20% 10%, rgba(56,189,248,0.08), transparent),
+      radial-gradient(ellipse 50% 50% at 80% 80%, rgba(167,139,250,0.06), transparent);
   }
-  input[type="text"] {
-    flex: 1; padding: 0.6rem 1rem; border-radius: 6px;
-    border: 1px solid var(--bg2); background: var(--bg1);
-    color: var(--fg); font-size: 0.9rem; outline: none;
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
   }
-  input:focus { border-color: var(--blue); }
-  button {
-    padding: 0.6rem 1.2rem; border-radius: 6px; border: none;
-    background: var(--blue); color: var(--bg); font-weight: 600;
-    cursor: pointer; font-size: 0.9rem;
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+    gap: 1rem;
   }
-  button:hover { opacity: 0.9; }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .logo {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 1rem; color: #fff;
+  }
+
+  .header h1 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: -0.02em;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .status-badge {
+    display: flex; align-items: center; gap: 0.4rem;
+    font-size: 0.8rem; color: var(--fg-muted);
+  }
+
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-muted);
+    transition: background 0.3s;
+  }
+
+  .status-dot.online {
+    background: var(--green);
+    box-shadow: 0 0 6px rgba(74,222,128,0.5);
+  }
+
+  .status-dot.offline {
+    background: var(--red);
+  }
+
+  .auto-refresh-toggle {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.8rem; color: var(--fg-muted); cursor: pointer;
+    user-select: none;
+  }
+
+  .toggle-track {
+    width: 36px; height: 20px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    position: relative;
+    transition: background 0.2s;
+  }
+
+  .toggle-track.active {
+    background: var(--accent);
+  }
+
+  .toggle-knob {
+    width: 16px; height: 16px;
+    background: #fff;
+    border-radius: 50%;
+    position: absolute;
+    top: 2px; left: 2px;
+    transition: transform 0.2s;
+  }
+
+  .toggle-track.active .toggle-knob {
+    transform: translateX(16px);
+  }
+
+  /* ── Cards ── */
   .card {
-    background: var(--bg1); border-radius: 8px;
-    padding: 1.2rem; margin-bottom: 1rem;
+    background: var(--bg-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+    transition: background 0.2s, border-color 0.2s, transform 0.2s;
   }
-  .card h3 { color: var(--fg2); font-size: 0.85rem; text-transform: uppercase;
-    letter-spacing: 0.05em; margin-bottom: 0.8rem; }
+
+  .card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+  }
+
+  .card-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    margin-bottom: 0.75rem;
+  }
+
+  /* ── Plan Overview ── */
+  .plan-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
   .plan-badge {
-    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px;
-    background: var(--blue); color: var(--bg); font-weight: 600;
+    display: inline-flex; align-items: center;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: capitalize;
+  }
+
+  .plan-meta {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .meta-item {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .meta-label {
+    font-size: 0.7rem;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .meta-value {
+    font-size: 0.9rem;
+    color: var(--fg-dim);
+    font-weight: 500;
+  }
+
+  .countdown {
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ── Quota Grid ── */
+  .quota-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .quota-card {
+    background: var(--bg-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    transition: background 0.2s, border-color 0.2s, transform 0.2s;
+  }
+
+  .quota-card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-hover);
+    transform: translateY(-2px);
+  }
+
+  .quota-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    margin-bottom: 0.75rem;
+    word-break: break-word;
+  }
+
+  /* ── Ring Progress ── */
+  .ring-container {
+    position: relative;
+    width: var(--ring-size);
+    height: var(--ring-size);
+    margin-bottom: 0.75rem;
+  }
+
+  .ring-svg {
+    width: 100%; height: 100%;
+    transform: rotate(-90deg);
+  }
+
+  .ring-bg {
+    fill: none;
+    stroke: rgba(255,255,255,0.06);
+    stroke-width: var(--ring-stroke);
+  }
+
+  .ring-fill {
+    fill: none;
+    stroke-width: var(--ring-stroke);
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1s ease, stroke 0.5s;
+  }
+
+  .ring-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .ring-pct {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ring-label {
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    margin-top: 2px;
+  }
+
+  .quota-remaining {
+    font-size: 0.85rem;
+    color: var(--fg-dim);
+  }
+
+  .unlimited-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    background: rgba(56,189,248,0.15);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .unlimited-icon {
+    font-size: 1rem;
+  }
+
+  /* ── Models Section ── */
+  .collapsible-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .collapsible-header:hover .card-label {
+    color: var(--fg-dim);
+  }
+
+  .chevron {
+    width: 20px; height: 20px;
+    color: var(--fg-muted);
+    transition: transform 0.3s;
+  }
+
+  .chevron.open {
+    transform: rotate(180deg);
+  }
+
+  .collapsible-body {
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 0.4s ease;
+  }
+
+  .collapsible-body.open {
+    max-height: 2000px;
+  }
+
+  .models-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
     font-size: 0.85rem;
   }
-  .quota-item { margin-bottom: 1rem; }
-  .quota-header {
-    display: flex; justify-content: space-between; margin-bottom: 0.3rem;
-    font-size: 0.9rem;
+
+  .models-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    border-bottom: 1px solid var(--border);
   }
-  .quota-label { color: var(--fg2); }
-  .quota-value { color: var(--fg); font-weight: 600; }
-  .progress-bar {
-    height: 8px; border-radius: 4px; background: var(--bg2); overflow: hidden;
+
+  .models-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    color: var(--fg-dim);
   }
-  .progress-fill {
-    height: 100%; border-radius: 4px; transition: width 0.5s ease;
+
+  .models-table tr:hover td {
+    background: rgba(255,255,255,0.02);
   }
-  .fill-green { background: var(--green); }
-  .fill-yellow { background: var(--yellow); }
-  .fill-red { background: var(--red); }
-  .fill-blue { background: var(--blue); }
-  .unlimited-badge {
-    display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px;
-    background: var(--blue); color: var(--bg); font-size: 0.75rem;
+
+  .model-id {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: var(--accent);
   }
+
+  .owner-badge {
+    display: inline-block;
+    padding: 0.15rem 0.45rem;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.06);
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+  }
+
+  .model-group-header td {
+    font-weight: 600;
+    color: var(--fg-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding-top: 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── JSON Viewer ── */
   .json-view {
-    background: var(--bg); border-radius: 6px; padding: 1rem;
-    font-family: monospace; font-size: 0.8rem; color: var(--fg3);
-    overflow-x: auto; white-space: pre-wrap; max-height: 400px;
-    overflow-y: auto; margin-top: 0.5rem;
+    background: rgba(0,0,0,0.3);
+    border-radius: 8px;
+    padding: 1rem;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 500px;
+    overflow-y: auto;
+    margin-top: 0.75rem;
   }
-  .error {
-    border: 1px solid var(--red); background: rgba(251,73,52,0.1);
-    border-radius: 6px; padding: 1rem; color: var(--red);
+
+  .json-key { color: var(--accent); }
+  .json-string { color: var(--green); }
+  .json-number { color: var(--yellow); }
+  .json-bool { color: var(--purple); }
+  .json-null { color: var(--fg-muted); }
+  .json-bracket { color: var(--fg-dim); }
+
+  /* ── Loading / Error ── */
+  .loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 4rem 1rem;
+    color: var(--fg-muted);
   }
-  .welcome { color: var(--fg3); text-align: center; padding: 3rem 1rem; }
+
   .spinner {
-    display: inline-block; width: 16px; height: 16px;
-    border: 2px solid var(--fg3); border-top-color: var(--blue);
-    border-radius: 50%; animation: spin 0.8s linear infinite;
-    vertical-align: middle; margin-right: 0.5rem;
+    width: 32px; height: 32px;
+    border: 3px solid rgba(255,255,255,0.08);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 1rem;
   }
+
   @keyframes spin { to { transform: rotate(360deg); } }
-  .loading { color: var(--fg3); padding: 2rem; text-align: center; }
+
+  @keyframes ring-in {
+    from { stroke-dashoffset: var(--circumference); }
+  }
+
+  .error-card {
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.25);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    color: var(--red);
+    margin-bottom: 1rem;
+  }
+
+  .last-updated {
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+    margin-top: 1.5rem;
+    padding-bottom: 1rem;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    .container { padding: 1rem; }
+    .header h1 { font-size: 1.1rem; }
+    .quota-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    :root { --ring-size: 80px; }
+  }
 </style>
 </head>
 <body>
+<div class="backdrop"></div>
 <div class="container">
-  <h1>Copilot Proxy Usage</h1>
-  <div class="input-row">
-    <input type="text" id="endpoint" placeholder="http://localhost:4141/usage" />
-    <button onclick="fetchUsage()">Fetch</button>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">CP</div>
+      <h1>Copilot Proxy</h1>
+    </div>
+    <div class="header-right">
+      <div class="status-badge">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Checking...</span>
+      </div>
+      <label class="auto-refresh-toggle" id="autoRefreshToggle">
+        <div class="toggle-track" id="toggleTrack">
+          <div class="toggle-knob"></div>
+        </div>
+        <span>Auto-refresh</span>
+      </label>
+    </div>
   </div>
+
+  <!-- Content -->
   <div id="content">
-    <div class="welcome">Enter your proxy endpoint URL and click Fetch</div>
+    <div class="loading-container">
+      <div class="spinner"></div>
+      <span>Loading dashboard...</span>
+    </div>
   </div>
+
+  <div class="last-updated" id="lastUpdated"></div>
 </div>
+
 <script>
-const params = new URLSearchParams(window.location.search);
-const epInput = document.getElementById('endpoint');
-if (params.get('endpoint')) {
-  epInput.value = params.get('endpoint');
-  fetchUsage();
-} else {
-  epInput.value = 'http://localhost:4141/usage';
-}
+const BASE = window.location.origin;
+let autoRefresh = true;
+let refreshTimer = null;
+let countdownTimer = null;
+let usageData = null;
+let modelsData = null;
 
-async function fetchUsage() {
-  const el = document.getElementById('content');
-  const url = epInput.value.trim();
-  if (!url) return;
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+  updateToggleUI();
+  document.getElementById('autoRefreshToggle').addEventListener('click', toggleAutoRefresh);
+  checkHealth();
+  fetchAll();
+  startAutoRefresh();
+});
 
-  // Update URL bar
-  const u = new URL(window.location);
-  u.searchParams.set('endpoint', url);
-  history.replaceState(null, '', u);
-
-  el.innerHTML = '<div class="loading"><span class="spinner"></span> Loading...</div>';
-
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    render(data);
-  } catch (e) {
-    el.innerHTML = `<div class="error">Error: ${e.message}</div>`;
+function toggleAutoRefresh() {
+  autoRefresh = !autoRefresh;
+  updateToggleUI();
+  if (autoRefresh) {
+    startAutoRefresh();
+  } else {
+    stopAutoRefresh();
   }
 }
 
-function render(data) {
+function updateToggleUI() {
+  const track = document.getElementById('toggleTrack');
+  track.classList.toggle('active', autoRefresh);
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  refreshTimer = setInterval(() => {
+    checkHealth();
+    fetchAll();
+  }, 30000);
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+// ── Health Check ──
+async function checkHealth() {
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  try {
+    const resp = await fetch(BASE + '/');
+    if (resp.ok) {
+      dot.className = 'status-dot online';
+      text.textContent = 'Online';
+    } else {
+      dot.className = 'status-dot offline';
+      text.textContent = 'Error';
+    }
+  } catch {
+    dot.className = 'status-dot offline';
+    text.textContent = 'Offline';
+  }
+}
+
+// ── Fetch All Data ──
+async function fetchAll() {
+  try {
+    const [usageResp, modelsResp] = await Promise.all([
+      fetch(BASE + '/usage'),
+      fetch(BASE + '/models')
+    ]);
+
+    if (usageResp.ok) {
+      usageData = await usageResp.json();
+    }
+    if (modelsResp.ok) {
+      modelsData = await modelsResp.json();
+    }
+
+    render();
+    document.getElementById('lastUpdated').textContent =
+      'Last updated: ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      '<div class="error-card">Failed to fetch data: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ── Render ──
+function render() {
   const el = document.getElementById('content');
   let html = '';
 
-  // Plan
-  if (data.copilot_plan) {
-    html += `<div class="card"><h3>Plan</h3><span class="plan-badge">${data.copilot_plan}</span>`;
-    if (data.quota_reset_date) html += `<span style="margin-left:1rem;color:var(--fg3)">Resets: ${data.quota_reset_date}</span>`;
-    html += '</div>';
+  // Plan Overview
+  html += renderPlanCard();
+
+  // Quota Grid
+  html += renderQuotaGrid();
+
+  // Models
+  html += renderModelsSection();
+
+  // Raw JSON
+  html += renderRawJson();
+
+  el.innerHTML = html;
+
+  // Animate rings after DOM insertion
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.ring-fill').forEach(ring => {
+      const target = ring.dataset.target;
+      ring.style.strokeDashoffset = target;
+    });
+  });
+
+  // Start countdown
+  startCountdown();
+
+  // Re-attach collapsible listeners
+  document.querySelectorAll('.collapsible-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const body = header.nextElementSibling;
+      const chevron = header.querySelector('.chevron');
+      body.classList.toggle('open');
+      chevron.classList.toggle('open');
+    });
+  });
+}
+
+// ── Plan Card ──
+function renderPlanCard() {
+  if (!usageData) return '';
+  let html = '<div class="card"><div class="card-label">Plan Overview</div><div class="plan-row">';
+
+  if (usageData.copilot_plan) {
+    html += '<span class="plan-badge">' + escapeHtml(usageData.copilot_plan) + '</span>';
   }
 
-  // Quotas
-  if (data.quota_snapshots) {
-    for (const [name, snap] of Object.entries(data.quota_snapshots)) {
-      html += `<div class="card"><h3>${name.replace(/_/g,' ')}</h3>`;
-      if (snap.unlimited) {
-        html += '<span class="unlimited-badge">Unlimited</span>';
-        html += '<div class="progress-bar" style="margin-top:0.5rem"><div class="progress-fill fill-blue" style="width:100%"></div></div>';
-      } else {
-        const pct = snap.percent_remaining || 0;
-        const cls = pct > 75 ? 'fill-green' : pct > 25 ? 'fill-yellow' : 'fill-red';
-        html += `<div class="quota-item"><div class="quota-header"><span class="quota-label">Remaining</span><span class="quota-value">${snap.remaining ?? '?'}</span></div>`;
-        html += `<div class="progress-bar"><div class="progress-fill ${cls}" style="width:${pct}%"></div></div></div>`;
-      }
-      html += '</div>';
+  html += '<div class="plan-meta">';
+
+  if (usageData.quota_reset_date) {
+    html += '<div class="meta-item"><span class="meta-label">Quota Resets</span>';
+    html += '<span class="meta-value">' + escapeHtml(usageData.quota_reset_date) + '</span></div>';
+    html += '<div class="meta-item"><span class="meta-label">Time Remaining</span>';
+    html += '<span class="meta-value countdown" id="countdown">' + getCountdown(usageData.quota_reset_date) + '</span></div>';
+  }
+
+  html += '</div></div></div>';
+  return html;
+}
+
+// ── Countdown ──
+function getCountdown(dateStr) {
+  const reset = new Date(dateStr);
+  const now = new Date();
+  const diff = reset - now;
+  if (diff <= 0) return 'Resetting...';
+  const days = Math.floor(diff / 86400000);
+  const hours = Math.floor((diff % 86400000) / 3600000);
+  const mins = Math.floor((diff % 3600000) / 60000);
+  if (days > 0) return days + 'd ' + hours + 'h ' + mins + 'm';
+  if (hours > 0) return hours + 'h ' + mins + 'm';
+  return mins + 'm';
+}
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  if (!usageData || !usageData.quota_reset_date) return;
+  countdownTimer = setInterval(() => {
+    const el = document.getElementById('countdown');
+    if (el) el.textContent = getCountdown(usageData.quota_reset_date);
+  }, 60000);
+}
+
+// ── Quota Grid ──
+function renderQuotaGrid() {
+  if (!usageData || !usageData.quota_snapshots) return '';
+  const entries = Object.entries(usageData.quota_snapshots);
+  if (entries.length === 0) return '';
+
+  let html = '<div class="quota-grid">';
+  for (const [name, snap] of entries) {
+    html += renderQuotaCard(name, snap);
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderQuotaCard(name, snap) {
+  const displayName = name.replace(/_/g, ' ');
+  let html = '<div class="quota-card"><div class="quota-name">' + escapeHtml(displayName) + '</div>';
+
+  if (snap.unlimited) {
+    html += renderRing(100, true);
+    html += '<div class="unlimited-badge"><span class="unlimited-icon">&infin;</span> Unlimited</div>';
+  } else {
+    const pct = Math.round(snap.percent_remaining || 0);
+    html += renderRing(pct, false);
+    html += '<div class="quota-remaining">' + (snap.remaining != null ? snap.remaining : '?') + ' remaining</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderRing(pct, unlimited) {
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (pct / 100) * circumference;
+  const color = unlimited ? 'var(--accent)' : getColor(pct);
+
+  let html = '<div class="ring-container">';
+  html += '<svg class="ring-svg" viewBox="0 0 100 100">';
+  html += '<circle class="ring-bg" cx="50" cy="50" r="' + radius + '"/>';
+  html += '<circle class="ring-fill" cx="50" cy="50" r="' + radius + '"';
+  html += ' stroke="' + color + '"';
+  html += ' stroke-dasharray="' + circumference + '"';
+  html += ' stroke-dashoffset="' + circumference + '"';
+  html += ' data-target="' + offset + '"';
+  html += '/>';
+  html += '</svg>';
+  html += '<div class="ring-text">';
+  if (unlimited) {
+    html += '<span class="ring-pct" style="color:var(--accent)">&infin;</span>';
+  } else {
+    html += '<span class="ring-pct" style="color:' + color + '">' + pct + '%</span>';
+    html += '<span class="ring-label">remaining</span>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function getColor(pct) {
+  if (pct > 60) return 'var(--green)';
+  if (pct > 25) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+// ── Models ──
+function renderModelsSection() {
+  if (!modelsData || !modelsData.data || modelsData.data.length === 0) return '';
+
+  // Group by owned_by
+  const groups = {};
+  for (const m of modelsData.data) {
+    const owner = m.owned_by || 'unknown';
+    if (!groups[owner]) groups[owner] = [];
+    groups[owner].push(m);
+  }
+
+  // Sort groups alphabetically, sort models within each group
+  const sortedOwners = Object.keys(groups).sort();
+  for (const owner of sortedOwners) {
+    groups[owner].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+  }
+
+  let html = '<div class="card">';
+  html += '<div class="collapsible-header">';
+  html += '<div class="card-label" style="margin-bottom:0">Models (' + modelsData.data.length + ')</div>';
+  html += '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+  html += '</div>';
+  html += '<div class="collapsible-body">';
+  html += '<table class="models-table"><thead><tr>';
+  html += '<th>Model ID</th><th>Display Name</th><th>Owner</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const owner of sortedOwners) {
+    if (sortedOwners.length > 1) {
+      html += '<tr class="model-group-header"><td colspan="3">' + escapeHtml(owner) + '</td></tr>';
+    }
+    for (const m of groups[owner]) {
+      html += '<tr>';
+      html += '<td><span class="model-id">' + escapeHtml(m.id) + '</span></td>';
+      html += '<td>' + escapeHtml(m.display_name || m.id) + '</td>';
+      html += '<td><span class="owner-badge">' + escapeHtml(m.owned_by || '—') + '</span></td>';
+      html += '</tr>';
     }
   }
 
-  // Raw JSON
-  html += `<div class="card"><h3>Raw Response</h3><div class="json-view">${JSON.stringify(data, null, 2)}</div></div>`;
+  html += '</tbody></table></div></div>';
+  return html;
+}
 
-  el.innerHTML = html;
+// ── Raw JSON ──
+function renderRawJson() {
+  let html = '<div class="card">';
+  html += '<div class="collapsible-header">';
+  html += '<div class="card-label" style="margin-bottom:0">Raw Response</div>';
+  html += '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+  html += '</div>';
+  html += '<div class="collapsible-body">';
+
+  if (usageData) {
+    html += '<div class="json-view">' + syntaxHighlight(usageData) + '</div>';
+  }
+
+  html += '</div></div>';
+  return html;
+}
+
+function syntaxHighlight(obj) {
+  const json = JSON.stringify(obj, null, 2);
+  return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?/g, function (match) {
+      if (/:$/.test(match)) {
+        // Key
+        return '<span class="json-key">' + match.slice(0, -1) + '</span>:';
+      }
+      return '<span class="json-string">' + match + '</span>';
+    })
+    .replace(/\b(-?\d+(\.\d+)?([eE][+-]?\d+)?)\b/g, '<span class="json-number">$1</span>')
+    .replace(/\b(true|false)\b/g, '<span class="json-bool">$1</span>')
+    .replace(/\bnull\b/g, '<span class="json-null">null</span>')
+    .replace(/([[\]{}])/g, '<span class="json-bracket">$1</span>');
+}
+
+// ── Utils ──
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 </script>
 </body>
