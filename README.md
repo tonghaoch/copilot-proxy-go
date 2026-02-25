@@ -17,6 +17,11 @@ A single Go binary that authenticates with GitHub Copilot and exposes standard A
 - **Quota optimization** — auto-routes compact/warmup requests to smaller models to save premium quota
 - **Claude Code integration** — one-command setup with `--claude-code` flag
 - **Token management** — GitHub OAuth device-code flow with automatic Copilot token refresh
+
+## Dashboard
+
+![Dashboard](demo/copilot-proxy-dashboard.png)
+
 ## Quick Start
 
 ### 1. Build
