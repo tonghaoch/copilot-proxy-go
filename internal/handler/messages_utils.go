@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 var (
@@ -170,4 +172,78 @@ func getToolResultText(raw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 	return string(raw)
+}
+
+// claudeMDRe matches "Contents of /path/to/CLAUDE.md (..." followed by content.
+var claudeMDRe = regexp.MustCompile(`Contents of (/[^\s]+/CLAUDE\.md)(?: \([^)]*\))?:\s*\n([\s\S]*?)(?:\n\n(?:Contents of /|$))`)
+
+// extractClaudeMDFiles parses the system prompt for CLAUDE.md file references.
+func extractClaudeMDFiles(systemPrompt string) []state.ClaudeMDFile {
+	if systemPrompt == "" {
+		return nil
+	}
+
+	var files []state.ClaudeMDFile
+
+	// Try the regex approach first for standard format
+	matches := claudeMDRe.FindAllStringSubmatch(systemPrompt, -1)
+	for _, m := range matches {
+		content := strings.TrimSpace(m[2])
+		if content != "" {
+			files = append(files, state.ClaudeMDFile{
+				Path:    m[1],
+				Content: content,
+			})
+		}
+	}
+
+	// Fallback: scan line by line for "Contents of" pattern
+	if len(files) == 0 {
+		lines := strings.Split(systemPrompt, "\n")
+		for i, line := range lines {
+			if !strings.HasPrefix(line, "Contents of /") || !strings.Contains(line, "CLAUDE.md") {
+				continue
+			}
+
+			// Extract path
+			parts := strings.SplitN(line, " ", 4)
+			if len(parts) < 3 {
+				continue
+			}
+			path := parts[2]
+			// Remove trailing colon or paren info
+			path = strings.TrimRight(path, ":")
+			if idx := strings.Index(path, " ("); idx >= 0 {
+				path = path[:idx]
+			}
+
+			// Collect content lines until next "Contents of" or double blank
+			var contentLines []string
+			blankCount := 0
+			for j := i + 1; j < len(lines); j++ {
+				if strings.HasPrefix(lines[j], "Contents of /") {
+					break
+				}
+				if lines[j] == "" {
+					blankCount++
+					if blankCount >= 2 {
+						break
+					}
+				} else {
+					blankCount = 0
+				}
+				contentLines = append(contentLines, lines[j])
+			}
+
+			content := strings.TrimSpace(strings.Join(contentLines, "\n"))
+			if content != "" {
+				files = append(files, state.ClaudeMDFile{
+					Path:    path,
+					Content: content,
+				})
+			}
+		}
+	}
+
+	return files
 }

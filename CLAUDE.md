@@ -49,7 +49,7 @@ internal/
   handler/
     messages.go                      # POST /v1/messages — core Anthropic-compatible handler (3-tier routing)
     messages_native.go               # Native Messages API backend
-    messages_utils.go                # SSE helpers, model checks, vision detection
+    messages_utils.go                # SSE helpers, model checks, vision detection, CLAUDE.md extraction
     chat_completions.go              # POST /chat/completions (OpenAI passthrough)
     responses.go                     # POST /responses (Responses API passthrough)
     translate_chat.go                # Anthropic <-> Chat Completions translation
@@ -64,6 +64,7 @@ internal/
     count_tokens.go                  # POST /v1/messages/count_tokens (estimation)
     models.go                        # GET /models
     health.go, token.go, usage.go    # Utility endpoints
+    stats.go                         # GET /api/stats — aggregated metrics JSON endpoint
     dashboard.go, dashboard.html     # Embedded HTML dashboard (go:embed)
     embeddings.go                    # POST /embeddings passthrough
   logger/logger.go                   # Per-handler file logging with daily rotation (7-day retention)
@@ -76,7 +77,9 @@ internal/
   shell/
     shell.go                         # Shell detection, export script generation
     clipboard.go                     # Cross-platform clipboard
-  state/state.go                     # Thread-safe global state singleton (tokens, models, paths)
+  state/
+    state.go                         # Thread-safe global state singleton (tokens, models, paths)
+    metrics.go                       # In-memory metrics store (ring buffer, aggregates, session snapshots)
 pages/index.html                     # Standalone usage dashboard
 ```
 
@@ -86,11 +89,13 @@ pages/index.html                     # Standalone usage dashboard
 
 1. Parse Anthropic request → apply quota optimizations (compact/warmup → small model)
 2. Detect subagent markers, merge tool result blocks
-3. Route to best backend based on model capabilities:
+3. Update session snapshot (CLAUDE.md extraction, tools, thinking config)
+4. Route to best backend based on model capabilities:
    - **Native Messages API** (`/v1/messages`) — passthrough with thinking/vision adjustments
    - **Responses API** (`/responses`) — translate Anthropic ↔ Responses format
    - **Chat Completions** (`/chat/completions`) — translate Anthropic ↔ Chat Completions format
-4. Handle streaming (SSE event translation) or non-streaming (JSON translation)
+5. Handle streaming (SSE event translation) or non-streaming (JSON translation)
+6. Record request metrics (tokens, latency, backend, model) to `state.Metrics`
 
 ### Routes (chi router)
 
@@ -99,6 +104,7 @@ GET  /                              → Health
 GET  /token                         → Token
 GET  /usage                         → Usage
 GET  /dashboard                     → Dashboard (embedded HTML)
+GET  /api/stats                     → Stats (aggregated metrics JSON)
 GET  /models, /v1/models            → Models
 POST /chat/completions, /v1/chat/completions → ChatCompletions
 POST /v1/messages                   → Messages (Anthropic-compatible)
@@ -147,6 +153,8 @@ GitHub token: `~/.local/share/copilot-proxy-go/github_token`
 
 ## Key Patterns
 
+- **In-memory metrics**: `state.Metrics` singleton with ring buffer (last 200 requests), incremental aggregates, and session snapshot — all behind `sync.RWMutex`; exposed via `GET /api/stats`
+- **Session intelligence**: Extracts CLAUDE.md files, tool inventory, thinking config, beta features, and subagent info from each Messages request system prompt
 - **Thread-safe global state**: `state.Global` singleton with `sync.RWMutex`
 - **Token auto-refresh**: Background goroutine refreshes Copilot token 60s before expiry
 - **Three-tier backend routing**: Native Messages > Responses > Chat Completions (based on model's `supported_endpoints`)

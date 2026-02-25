@@ -36,6 +36,11 @@ func NewAnthropicStreamState(model string) *AnthropicStreamState {
 	}
 }
 
+// TokenCounts returns the accumulated token counts from the stream.
+func (s *AnthropicStreamState) TokenCounts() (input, output, cached int) {
+	return s.inputTokens, s.outputTokens, s.cachedTokens
+}
+
 // TranslateChunk translates a single OpenAI Chat Completion chunk into
 // zero or more Anthropic SSE events.
 func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEEvent {

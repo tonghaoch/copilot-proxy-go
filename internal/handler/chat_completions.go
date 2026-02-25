@@ -6,18 +6,22 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"encoding/json"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // ChatCompletions handles POST /chat/completions and /v1/chat/completions.
 // It proxies requests to the Copilot API, supporting both streaming and
 // non-streaming modes.
 func ChatCompletions(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	body, isStream, isAgent, err := service.ParseAndPatchChatCompletion(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -26,12 +30,14 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	logger.For("chat-completions").Log("stream=%v initiator=%s", isStream, initiatorStr(isAgent))
 
-	// Log token count estimate
+	// Parse model name for metrics
 	var parsed struct {
 		Model    string `json:"model"`
 		Messages []any  `json:"messages"`
 	}
+	modelName := ""
 	if json.Unmarshal(body, &parsed) == nil {
+		modelName = parsed.Model
 		inputTokens := countStringTokens(string(body))
 		slog.Info("chat completion request", "model", parsed.Model,
 			"stream", isStream, "initiator", initiatorStr(isAgent),
@@ -52,6 +58,20 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		forwardJSON(w, resp)
 	}
+
+	// Record metrics
+	state.Metrics.RecordRequest(state.RequestRecord{
+		Timestamp:   start,
+		Endpoint:    "chat_completions",
+		Model:       modelName,
+		RoutedModel: modelName,
+		Backend:     "chat_completions",
+		RequestType: "normal",
+		Initiator:   initiatorStr(isAgent),
+		Streaming:   isStream,
+		LatencyMs:   time.Since(start).Milliseconds(),
+		StatusCode:  resp.StatusCode,
+	})
 }
 
 // streamSSE proxies an SSE stream from the Copilot API to the client.
@@ -91,4 +111,3 @@ func forwardJSON(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
-

@@ -27,6 +27,11 @@ type ResponsesStreamState struct {
 
 	// Track text block indices by composite key "outputIndex:contentIndex"
 	textBlockByKey map[string]int
+
+	// Token counts for metrics
+	inputTokens  int
+	outputTokens int
+	cachedTokens int
 }
 
 // NewResponsesStreamState creates a new stream state.
@@ -40,6 +45,11 @@ func NewResponsesStreamState(model string) *ResponsesStreamState {
 		blockHasDelta:         make(map[int]bool),
 		textBlockByKey:        make(map[string]int),
 	}
+}
+
+// TokenCounts returns the accumulated token counts from the stream.
+func (s *ResponsesStreamState) TokenCounts() (input, output, cached int) {
+	return s.inputTokens, s.outputTokens, s.cachedTokens
 }
 
 // TranslateEvent translates a single Responses API stream event into
@@ -69,6 +79,8 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 				usage.CacheReadInputTokens = evt.Response.Usage.InputTokensDetails.CachedTokens
 				usage.InputTokens -= usage.CacheReadInputTokens
 			}
+			s.inputTokens = usage.InputTokens
+			s.cachedTokens = usage.CacheReadInputTokens
 		}
 
 		events = append(events, SSEEvent{
@@ -413,6 +425,7 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 		}
 
 		translated := translateResponsesResultToAnthropic(&result)
+		s.outputTokens = translated.Usage.OutputTokens
 
 		events = append(events, SSEEvent{
 			Event: "message_delta",

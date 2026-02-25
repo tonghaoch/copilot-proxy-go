@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -16,7 +17,7 @@ import (
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
 // rawBody is the original request bytes to preserve unknown fields.
-func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rawBody []byte) {
+func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rawBody []byte, rec *state.RequestRecord) {
 	// Parse into map to preserve unknown fields
 	var payload map[string]any
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
@@ -62,7 +63,7 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	defer resp.Body.Close()
 
 	if req.Stream {
-		// Stream passthrough — forward SSE events directly
+		// Stream passthrough — forward SSE events, sniff usage data
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -74,6 +75,9 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 		w.WriteHeader(http.StatusOK)
 
 		readSSE(resp.Body, func(eventType, data string) error {
+			// Sniff token counts from native Anthropic events
+			captureNativeTokens(eventType, data, rec)
+
 			if eventType != "" {
 				io.WriteString(w, "event: "+eventType+"\n")
 			}
@@ -82,10 +86,39 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 			return nil
 		})
 	} else {
-		// Non-streaming passthrough
+		// Non-streaming passthrough — tee body to capture usage
+		var buf bytes.Buffer
+		tee := io.TeeReader(resp.Body, &buf)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		io.Copy(w, tee)
+
+		// Parse usage from the buffered copy
+		var anthResp AnthropicResponse
+		if json.Unmarshal(buf.Bytes(), &anthResp) == nil {
+			rec.InputTokens = int64(anthResp.Usage.InputTokens)
+			rec.OutputTokens = int64(anthResp.Usage.OutputTokens)
+			rec.CachedTokens = int64(anthResp.Usage.CacheReadInputTokens)
+		}
+	}
+}
+
+// captureNativeTokens extracts token counts from native Anthropic SSE events
+// (message_start for input tokens, message_delta for output tokens).
+func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
+	switch eventType {
+	case "message_start":
+		var evt MessageStartEvent
+		if json.Unmarshal([]byte(data), &evt) == nil {
+			rec.InputTokens = int64(evt.Message.Usage.InputTokens)
+			rec.CachedTokens = int64(evt.Message.Usage.CacheReadInputTokens)
+		}
+	case "message_delta":
+		var evt MessageDeltaEvent
+		if json.Unmarshal([]byte(data), &evt) == nil {
+			rec.OutputTokens = int64(evt.Usage.OutputTokens)
+		}
 	}
 }
 

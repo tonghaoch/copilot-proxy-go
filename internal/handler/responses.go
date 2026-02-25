@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
@@ -15,6 +16,8 @@ import (
 
 // Responses handles POST /responses and /v1/responses — OpenAI Responses API passthrough.
 func Responses(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -87,6 +90,21 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
+
+	// Record metrics
+	state.Metrics.RecordRequest(state.RequestRecord{
+		Timestamp:   start,
+		Endpoint:    "responses",
+		Model:       modelID,
+		RoutedModel: modelID,
+		Backend:     "responses",
+		RequestType: "normal",
+		Initiator:   initiatorStr(isAgent),
+		HasVision:   vision,
+		Streaming:   isStream,
+		LatencyMs:   time.Since(start).Milliseconds(),
+		StatusCode:  resp.StatusCode,
+	})
 }
 
 // streamResponsesPassthrough forwards Responses SSE events, applying stream
