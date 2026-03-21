@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
@@ -106,17 +108,7 @@ func startCmd() *cobra.Command {
 			}
 			state.Global.SetModels(models)
 
-			ids := make([]string, len(models))
-			for i, m := range models {
-				ids[i] = m.ID
-			}
-			sort.Strings(ids)
-
-			fmt.Fprintf(os.Stderr, "\n  Available models (%d):\n", len(models))
-			for _, id := range ids {
-				fmt.Fprintf(os.Stderr, "    • %s\n", id)
-			}
-			fmt.Fprintln(os.Stderr)
+			slog.Info("models loaded", "count", len(models))
 
 			// Claude Code interactive setup
 			if claudeCode {
@@ -447,31 +439,22 @@ func setupProxy() {
 }
 
 func runClaudeCodeSetup(port int, models []state.Model) error {
-	// Display model list for selection
-	fmt.Println()
-	fmt.Println("  Select primary model:")
+	// Build sorted option list
+	ids := make([]string, len(models))
 	for i, m := range models {
-		fmt.Printf("    %d. %s\n", i+1, m.ID)
+		ids[i] = m.ID
 	}
-	fmt.Print("\n  Enter number: ")
+	sort.Strings(ids)
 
-	var primaryIdx int
-	if _, err := fmt.Scan(&primaryIdx); err != nil || primaryIdx < 1 || primaryIdx > len(models) {
-		return fmt.Errorf("invalid selection")
+	primaryModel, err := runSelect("Select primary model", ids)
+	if err != nil {
+		return fmt.Errorf("model selection cancelled: %w", err)
 	}
-	primaryModel := models[primaryIdx-1].ID
 
-	fmt.Println("\n  Select small/fast model:")
-	for i, m := range models {
-		fmt.Printf("    %d. %s\n", i+1, m.ID)
+	smallModel, err := runSelect("Select small/fast model", ids)
+	if err != nil {
+		return fmt.Errorf("model selection cancelled: %w", err)
 	}
-	fmt.Print("\n  Enter number: ")
-
-	var smallIdx int
-	if _, err := fmt.Scan(&smallIdx); err != nil || smallIdx < 1 || smallIdx > len(models) {
-		return fmt.Errorf("invalid selection")
-	}
-	smallModel := models[smallIdx-1].ID
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -505,3 +488,136 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	return nil
 }
 
+// --- interactive select TUI ---
+
+const selectHeight = 15
+
+type selectModel struct {
+	title   string
+	items   []string
+	cursor  int
+	offset  int // first visible item index
+	result  string
+	done    bool
+	aborted bool
+}
+
+func runSelect(title string, items []string) (string, error) {
+	m := selectModel{title: title, items: items}
+	p := tea.NewProgram(m)
+	final, err := p.Run()
+	if err != nil {
+		return "", err
+	}
+	fm := final.(selectModel)
+	if fm.aborted {
+		return "", fmt.Errorf("aborted")
+	}
+	return fm.result, nil
+}
+
+func (m selectModel) Init() tea.Cmd { return nil }
+
+func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q", "esc":
+			m.aborted = true
+			return m, tea.Quit
+		case "enter":
+			m.result = m.items[m.cursor]
+			m.done = true
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+				if m.cursor < m.offset {
+					m.offset = m.cursor
+				}
+			}
+		case "down", "j":
+			if m.cursor < len(m.items)-1 {
+				m.cursor++
+				if m.cursor >= m.offset+selectHeight {
+					m.offset = m.cursor - selectHeight + 1
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m selectModel) View() string {
+	if m.done {
+		return ""
+	}
+
+	borderColor := lipgloss.Color("63")
+	accentColor := lipgloss.Color("12")
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+	thumbStyle := lipgloss.NewStyle().Foreground(accentColor)
+	cursorStyle := lipgloss.NewStyle().Foreground(accentColor)
+	selectedStyle := lipgloss.NewStyle().Foreground(accentColor)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	visible := selectHeight
+	if visible > len(m.items) {
+		visible = len(m.items)
+	}
+
+	// find max label width for alignment
+	maxW := 0
+	for _, item := range m.items {
+		if len(item) > maxW {
+			maxW = len(item)
+		}
+	}
+	contentW := 2 + maxW // "> " prefix + label
+
+	// scrollbar integrated into right border
+	needScroll := len(m.items) > visible
+	var thumbStart, thumbEnd int
+	if needScroll {
+		thumbH := max(1, visible*visible/len(m.items))
+		thumbPos := (m.offset * (visible - thumbH)) / max(1, len(m.items)-visible)
+		thumbStart = thumbPos
+		thumbEnd = thumbPos + thumbH
+	}
+
+	// top border: ╭─ Title ──────╮
+	title := " " + m.title + " "
+	titleRendered := lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(title)
+	remainW := contentW + 1 - lipgloss.Width(title) // box inner width - leading "─" - title
+	if remainW < 0 {
+		remainW = 0
+	}
+	topBorder := borderStyle.Render("╭─") + titleRendered + borderStyle.Render(strings.Repeat("─", remainW)+"╮")
+
+	// content lines
+	var lines []string
+	for i := 0; i < visible; i++ {
+		idx := m.offset + i
+		label := m.items[idx]
+		padded := label + strings.Repeat(" ", maxW-len(label))
+
+		var inner string
+		if idx == m.cursor {
+			inner = cursorStyle.Render("> ") + selectedStyle.Render(padded)
+		} else {
+			inner = "  " + normalStyle.Render(padded)
+		}
+
+		rightBorder := borderStyle.Render("│")
+		if needScroll && i >= thumbStart && i < thumbEnd {
+			rightBorder = thumbStyle.Render("█")
+		}
+
+		lines = append(lines, borderStyle.Render("│")+" "+inner+" "+rightBorder)
+	}
+
+	// bottom border: ╰──────────────╯
+	botBorder := borderStyle.Render("╰" + strings.Repeat("─", contentW+2) + "╯")
+
+	return topBorder + "\n" + strings.Join(lines, "\n") + "\n" + botBorder
+}
