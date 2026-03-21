@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
@@ -260,20 +261,53 @@ func SetupAuth(providedToken string) error {
 	}
 
 	// Start auto-refresh
-	StartTokenRefresh(copilotToken.RefreshIn)
+	StartTokenRefresh(copilotToken.ExpiresAt, copilotToken.RefreshIn)
 
 	return nil
 }
 
-// StartTokenRefresh starts a goroutine that refreshes the Copilot token periodically.
-func StartTokenRefresh(refreshIn int) {
-	refreshDuration := time.Duration(refreshIn-60) * time.Second
-	if refreshDuration < 30*time.Second {
-		refreshDuration = 30 * time.Second
+// refreshMu protects against concurrent token refreshes.
+var refreshMu sync.Mutex
+
+// lastRefresh tracks when the token was last refreshed to avoid redundant refreshes.
+var lastRefresh time.Time
+
+// RefreshCopilotTokenNow immediately refreshes the Copilot token.
+// It is safe for concurrent callers — only one refresh will occur at a time,
+// and if a refresh happened within the last 30 seconds, it is skipped.
+// Returns nil if the token was refreshed (or recently refreshed), error otherwise.
+func RefreshCopilotTokenNow() error {
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+
+	// Skip if refreshed recently (avoid thundering herd)
+	if time.Since(lastRefresh) < 30*time.Second {
+		return nil
 	}
+
+	githubToken := state.Global.GetGithubToken()
+	vsCodeVersion := state.Global.GetVSCodeVersion()
+
+	slog.Info("immediate Copilot token refresh triggered")
+	copilotToken, err := FetchCopilotToken(githubToken, vsCodeVersion)
+	if err != nil {
+		return fmt.Errorf("refreshing copilot token: %w", err)
+	}
+
+	state.Global.SetCopilotToken(copilotToken.Token)
+	lastRefresh = time.Now()
+	slog.Info("Copilot token refreshed successfully (immediate)")
+	return nil
+}
+
+// StartTokenRefresh starts a goroutine that refreshes the Copilot token periodically.
+// It uses expires_at (unix timestamp) to calculate refresh time, falling back to refresh_in.
+func StartTokenRefresh(expiresAt int64, refreshIn int) {
+	refreshDuration := calcRefreshDuration(expiresAt, refreshIn)
 
 	go func() {
 		for {
+			slog.Info("next Copilot token refresh scheduled", "in", refreshDuration.Round(time.Second))
 			time.Sleep(refreshDuration)
 
 			githubToken := state.Global.GetGithubToken()
@@ -284,11 +318,16 @@ func StartTokenRefresh(refreshIn int) {
 			if err != nil {
 				slog.Error("failed to refresh Copilot token", "error", err)
 				// Retry in 30 seconds on failure
-				time.Sleep(30 * time.Second)
+				refreshDuration = 30 * time.Second
 				continue
 			}
 
 			state.Global.SetCopilotToken(copilotToken.Token)
+
+			// Update lastRefresh so RefreshCopilotTokenNow knows
+			refreshMu.Lock()
+			lastRefresh = time.Now()
+			refreshMu.Unlock()
 
 			if state.Global.GetShowToken() {
 				slog.Info("refreshed Copilot token", "token", copilotToken.Token)
@@ -296,11 +335,36 @@ func StartTokenRefresh(refreshIn int) {
 				slog.Info("Copilot token refreshed successfully")
 			}
 
-			// Update refresh interval
-			refreshDuration = time.Duration(copilotToken.RefreshIn-60) * time.Second
-			if refreshDuration < 30*time.Second {
-				refreshDuration = 30 * time.Second
-			}
+			// Recalculate refresh interval
+			refreshDuration = calcRefreshDuration(copilotToken.ExpiresAt, copilotToken.RefreshIn)
 		}
 	}()
+}
+
+// calcRefreshDuration determines how long to wait before refreshing the token.
+// Prefers expires_at (refresh 2 minutes before expiry), falls back to refresh_in - 60s.
+func calcRefreshDuration(expiresAt int64, refreshIn int) time.Duration {
+	const minDuration = 30 * time.Second
+
+	// Primary: use expires_at if available
+	if expiresAt > 0 {
+		untilExpiry := time.Until(time.Unix(expiresAt, 0))
+		d := untilExpiry - 2*time.Minute // refresh 2 minutes before expiry
+		if d < minDuration {
+			d = minDuration
+		}
+		slog.Info("token refresh timing",
+			"expires_at", time.Unix(expiresAt, 0).Format(time.RFC3339),
+			"until_expiry", untilExpiry.Round(time.Second),
+			"refresh_in_from_api", refreshIn,
+			"chosen_wait", d.Round(time.Second))
+		return d
+	}
+
+	// Fallback: use refresh_in
+	d := time.Duration(refreshIn-60) * time.Second
+	if d < minDuration {
+		d = minDuration
+	}
+	return d
 }

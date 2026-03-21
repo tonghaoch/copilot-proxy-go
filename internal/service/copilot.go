@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/auth"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
+
+// isTokenExpired checks if the response indicates an expired/invalid token.
+func isTokenExpired(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+}
 
 // FetchModels retrieves available models from the Copilot API.
 func FetchModels() ([]state.Model, error) {
@@ -24,6 +31,22 @@ func FetchModels() ([]state.Model, error) {
 		return nil, fmt.Errorf("fetching models: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Retry once on token expiry
+	if isTokenExpired(resp.StatusCode) {
+		resp.Body.Close()
+		slog.Warn("models request got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		if err := auth.RefreshCopilotTokenNow(); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		req, _ = http.NewRequest(http.MethodGet, api.CopilotURL("/models"), nil)
+		req.Header = api.BuildCopilotHeadersFromState()
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetching models (retry): %w", err)
+		}
+		defer resp.Body.Close()
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, api.NewHTTPError(resp)
@@ -61,6 +84,25 @@ func ProxyChatCompletionEx(body []byte, isAgent, vision bool) (*http.Response, e
 		return nil, fmt.Errorf("proxying chat completion: %w", err)
 	}
 
+	// Retry once on token expiry
+	if isTokenExpired(resp.StatusCode) {
+		resp.Body.Close()
+		slog.Warn("chat completion got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		if err := auth.RefreshCopilotTokenNow(); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/chat/completions"), bytes.NewReader(body))
+		req.Header = api.BuildCopilotHeadersFromState()
+		api.SetInitiatorHeader(req.Header, isAgent)
+		if vision {
+			req.Header.Set("Copilot-Vision-Request", "true")
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("proxying chat completion (retry): %w", err)
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		return nil, api.NewHTTPError(resp)
@@ -90,6 +132,28 @@ func ProxyMessages(body []byte, betaHeader string, vision, isAgent bool) (*http.
 		return nil, fmt.Errorf("proxying messages: %w", err)
 	}
 
+	// Retry once on token expiry
+	if isTokenExpired(resp.StatusCode) {
+		resp.Body.Close()
+		slog.Warn("messages request got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		if err := auth.RefreshCopilotTokenNow(); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/v1/messages"), bytes.NewReader(body))
+		req.Header = api.BuildCopilotHeadersFromState()
+		api.SetInitiatorHeader(req.Header, isAgent)
+		if betaHeader != "" {
+			req.Header.Set("Anthropic-Beta", betaHeader)
+		}
+		if vision {
+			req.Header.Set("Copilot-Vision-Request", "true")
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("proxying messages (retry): %w", err)
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		return nil, api.NewHTTPError(resp)
@@ -116,6 +180,25 @@ func ProxyResponses(body []byte, isAgent, vision bool) (*http.Response, error) {
 		return nil, fmt.Errorf("proxying responses: %w", err)
 	}
 
+	// Retry once on token expiry
+	if isTokenExpired(resp.StatusCode) {
+		resp.Body.Close()
+		slog.Warn("responses request got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		if err := auth.RefreshCopilotTokenNow(); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/responses"), bytes.NewReader(body))
+		req.Header = api.BuildCopilotHeadersFromState()
+		api.SetInitiatorHeader(req.Header, isAgent)
+		if vision {
+			req.Header.Set("Copilot-Vision-Request", "true")
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("proxying responses (retry): %w", err)
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		return nil, api.NewHTTPError(resp)
@@ -136,6 +219,21 @@ func ProxyEmbeddings(body []byte) (*http.Response, error) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("proxying embeddings: %w", err)
+	}
+
+	// Retry once on token expiry
+	if isTokenExpired(resp.StatusCode) {
+		resp.Body.Close()
+		slog.Warn("embeddings request got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		if err := auth.RefreshCopilotTokenNow(); err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/embeddings"), bytes.NewReader(body))
+		req.Header = api.BuildCopilotHeadersFromState()
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("proxying embeddings (retry): %w", err)
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
