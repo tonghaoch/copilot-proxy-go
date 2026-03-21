@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +50,7 @@ func main() {
 
 func startCmd() *cobra.Command {
 	var (
+		host             string
 		port             int
 		githubToken      string
 		accountType      string
@@ -85,16 +87,6 @@ func startCmd() *cobra.Command {
 			if proxyEnv {
 				setupProxy()
 			}
-
-			// Signal handler
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				slog.Info("shutting down...")
-				logger.CloseAll()
-				os.Exit(0)
-			}()
 
 			// VS Code version
 			vsVer := api.FetchVSCodeVersion()
@@ -134,21 +126,44 @@ func startCmd() *cobra.Command {
 			}
 
 			// Start server
+			listenHost := host
+			if listenHost == "" {
+				listenHost = "127.0.0.1"
+			}
 			fmt.Println()
-			fmt.Printf("  Copilot API proxy is running on http://localhost:%d\n", port)
-			fmt.Printf("  Dashboard: http://localhost:%d/dashboard?endpoint=http://localhost:%d/usage\n", port, port)
+			fmt.Printf("  Copilot API proxy is running on http://%s:%d\n", listenHost, port)
+			fmt.Printf("  Dashboard: http://%s:%d/dashboard?endpoint=http://%s:%d/usage\n", listenHost, port, listenHost, port)
 			fmt.Println()
 
 			srv := server.New(server.Options{
+				Host:             host,
 				Port:             port,
 				ManualApprove:    manualApprove,
 				RateLimitSeconds: rateLimitSeconds,
 				RateLimitWait:    rateLimitWait,
 			})
-			return srv.ListenAndServe()
+
+			// Graceful shutdown on SIGINT/SIGTERM
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				<-sigCh
+				slog.Info("shutting down (30s timeout for in-flight requests)...")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				srv.Shutdown(ctx)
+				logger.CloseAll()
+			}()
+
+			err = srv.ListenAndServe()
+			if err == http.ErrServerClosed {
+				return nil // graceful shutdown
+			}
+			return err
 		},
 	}
 
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host/IP to bind to (use 0.0.0.0 for all interfaces)")
 	cmd.Flags().IntVarP(&port, "port", "p", 4141, "port to listen on")
 	cmd.Flags().StringVarP(&githubToken, "github-token", "g", "", "GitHub OAuth token (skips device code flow)")
 	cmd.Flags().StringVarP(&accountType, "account-type", "a", "individual", "Copilot account type: individual, business, enterprise")

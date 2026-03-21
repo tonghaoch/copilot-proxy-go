@@ -16,6 +16,7 @@ import (
 
 // Options configures the server behavior.
 type Options struct {
+	Host             string
 	Port             int
 	ManualApprove    bool
 	RateLimitSeconds int
@@ -82,7 +83,11 @@ func New(opts Options) *http.Server {
 	r.Post("/embeddings", handler.Embeddings)
 	r.Post("/v1/embeddings", handler.Embeddings)
 
-	addr := fmt.Sprintf(":%d", opts.Port)
+	host := opts.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := fmt.Sprintf("%s:%d", host, opts.Port)
 
 	return &http.Server{
 		Addr:         addr,

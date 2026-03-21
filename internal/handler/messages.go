@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
@@ -20,15 +22,19 @@ import (
 func Messages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	// Wrap to capture actual status code for metrics
+	ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
+
+	r.Body = http.MaxBytesReader(ww, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		api.ForwardError(w, err)
+		api.ForwardError(ww, err)
 		return
 	}
 
 	var req AnthropicRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		api.ForwardError(w, &api.HTTPError{
+		api.ForwardError(ww, &api.HTTPError{
 			Message:    "invalid request body",
 			StatusCode: http.StatusBadRequest,
 		})
@@ -95,20 +101,23 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	if model != nil && isMessagesSupported(model) {
 		slog.Info("routing to Messages API", "model", req.Model)
 		rec.Backend = "messages"
-		handleWithMessagesAPI(w, r, &req, forceAgent, body, rec)
+		handleWithMessagesAPI(ww, r, &req, forceAgent, body, rec)
 	} else if model != nil && isResponsesSupported(model) {
 		slog.Info("routing to Responses API", "model", req.Model)
 		rec.Backend = "responses"
-		handleWithResponsesAPI(w, r, &req, forceAgent, rec)
+		handleWithResponsesAPI(ww, r, &req, forceAgent, rec)
 	} else {
 		slog.Info("routing to Chat Completions API", "model", req.Model)
 		rec.Backend = "chat_completions"
-		handleWithChatCompletions(w, r, &req, forceAgent, rec)
+		handleWithChatCompletions(ww, r, &req, forceAgent, rec)
 	}
 
 	// Record request metrics
 	rec.LatencyMs = time.Since(start).Milliseconds()
-	rec.StatusCode = 200
+	rec.StatusCode = ww.Status()
+	if rec.StatusCode == 0 {
+		rec.StatusCode = 200
+	}
 	state.Metrics.RecordRequest(*rec)
 }
 

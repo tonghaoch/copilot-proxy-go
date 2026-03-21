@@ -13,8 +13,11 @@ go build -o copilot-proxy-go .
 # Authenticate (GitHub OAuth device-code flow)
 ./copilot-proxy-go auth
 
-# Start server (default port 4141)
+# Start server (default: 127.0.0.1:4141)
 ./copilot-proxy-go start
+
+# Listen on all interfaces
+./copilot-proxy-go start --host 0.0.0.0
 
 # Start with Claude Code interactive setup
 ./copilot-proxy-go start --claude-code
@@ -130,6 +133,7 @@ RealIP → RequestID → requestLogger → CORS → Recoverer → Auth → [Rate
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--host` | "127.0.0.1" | Host/IP to bind to (use 0.0.0.0 for all interfaces) |
 | `-p, --port` | 4141 | Listen port |
 | `-g, --github-token` | — | GitHub token (skips device-code flow) |
 | `-a, --account-type` | "individual" | individual/business/enterprise |
@@ -156,7 +160,10 @@ GitHub token: `~/.local/share/copilot-proxy-go/github_token`
 - **In-memory metrics**: `state.Metrics` singleton with ring buffer (last 200 requests), incremental aggregates, and session snapshot — all behind `sync.RWMutex`; exposed via `GET /api/stats`
 - **Session intelligence**: Extracts CLAUDE.md files, tool inventory, thinking config, beta features, and subagent info from each Messages request system prompt
 - **Thread-safe global state**: `state.Global` singleton with `sync.RWMutex`
-- **Token auto-refresh**: Background goroutine refreshes Copilot token 60s before expiry
+- **Token auto-refresh**: Background goroutine refreshes Copilot token 2 minutes before `expires_at`; request-level retry on 401/403 with immediate token refresh and thundering herd protection
+- **Localhost by default**: Server binds to `127.0.0.1` (not `0.0.0.0`); use `--host 0.0.0.0` for network access
+- **Graceful shutdown**: SIGINT/SIGTERM triggers `srv.Shutdown()` with 30s timeout for in-flight requests
+- **Request body limits**: All endpoints enforce 100 MB max request body via `http.MaxBytesReader`
 - **Three-tier backend routing**: Native Messages > Responses > Chat Completions (based on model's `supported_endpoints`)
 - **Format translation**: Full bidirectional Anthropic ↔ OpenAI translation including streaming SSE
 - **Thinking/reasoning blocks**: Maps between Claude extended thinking and OpenAI reasoning formats (with signatures)

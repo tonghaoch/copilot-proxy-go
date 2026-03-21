@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -9,10 +11,10 @@ import (
 
 // RateLimiter enforces a minimum interval between requests.
 type RateLimiter struct {
-	mu           sync.Mutex
-	seconds      int
-	wait         bool
-	lastRequest  time.Time
+	mu          sync.Mutex
+	seconds     int
+	wait        bool
+	lastRequest time.Time
 }
 
 // NewRateLimiter creates a rate limiter with the given interval in seconds.
@@ -44,9 +46,8 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 			remaining := cooldown - elapsed
 
 			if rl.wait {
-				rl.mu.Unlock()
+				// Sleep with lock held to properly serialize concurrent requests
 				time.Sleep(remaining)
-				rl.mu.Lock()
 				rl.lastRequest = time.Now()
 				rl.mu.Unlock()
 				next.ServeHTTP(w, r)
@@ -55,7 +56,7 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 			rl.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", remaining.String())
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(math.Ceil(remaining.Seconds()))))
 			w.WriteHeader(http.StatusTooManyRequests)
 			json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]string{

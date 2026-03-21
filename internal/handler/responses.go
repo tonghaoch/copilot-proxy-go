@@ -18,6 +18,7 @@ import (
 func Responses(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -123,17 +124,23 @@ func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response) {
 
 	sync := NewStreamIDSync()
 
-	readSSE(resp.Body, func(eventType, data string) error {
+	if err := readSSE(resp.Body, func(eventType, data string) error {
 		// Apply stream ID synchronization
 		data = sync.Process(eventType, data)
 
 		if eventType != "" {
-			io.WriteString(w, "event: "+eventType+"\n")
+			if _, err := io.WriteString(w, "event: "+eventType+"\n"); err != nil {
+				return err
+			}
 		}
-		io.WriteString(w, "data: "+data+"\n\n")
+		if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+			return err
+		}
 		flusher.Flush()
 		return nil
-	})
+	}); err != nil {
+		slog.Error("responses passthrough streaming error", "error", err)
+	}
 }
 
 // convertApplyPatchTools converts apply_patch custom tools to function tools.

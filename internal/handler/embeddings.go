@@ -12,6 +12,7 @@ import (
 // Embeddings handles POST /embeddings and /v1/embeddings.
 // It proxies the request directly to the Copilot embeddings endpoint.
 func Embeddings(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)

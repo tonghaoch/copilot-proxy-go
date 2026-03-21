@@ -74,17 +74,23 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 
-		readSSE(resp.Body, func(eventType, data string) error {
+		if err := readSSE(resp.Body, func(eventType, data string) error {
 			// Sniff token counts from native Anthropic events
 			captureNativeTokens(eventType, data, rec)
 
 			if eventType != "" {
-				io.WriteString(w, "event: "+eventType+"\n")
+				if _, err := io.WriteString(w, "event: "+eventType+"\n"); err != nil {
+					return err
+				}
 			}
-			io.WriteString(w, "data: "+data+"\n\n")
+			if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+				return err
+			}
 			flusher.Flush()
 			return nil
-		})
+		}); err != nil {
+			slog.Error("native messages streaming error", "error", err)
+		}
 	} else {
 		// Non-streaming passthrough — tee body to capture usage
 		var buf bytes.Buffer

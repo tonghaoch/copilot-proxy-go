@@ -22,6 +22,7 @@ import (
 func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, isStream, isAgent, err := service.ParseAndPatchChatCompletion(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)

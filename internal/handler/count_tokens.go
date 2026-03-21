@@ -20,6 +20,7 @@ type CountTokensResponse struct {
 // the token count using a simple heuristic (chars/4 approximation)
 // since full tiktoken support requires a separate Go library.
 func CountTokens(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req AnthropicRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")

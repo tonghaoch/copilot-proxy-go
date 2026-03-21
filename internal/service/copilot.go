@@ -30,7 +30,6 @@ func FetchModels() ([]state.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching models: %w", err)
 	}
-	defer resp.Body.Close()
 
 	// Retry once on token expiry
 	if isTokenExpired(resp.StatusCode) {
@@ -45,8 +44,8 @@ func FetchModels() ([]state.Model, error) {
 		if err != nil {
 			return nil, fmt.Errorf("fetching models (retry): %w", err)
 		}
-		defer resp.Body.Close()
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, api.NewHTTPError(resp)

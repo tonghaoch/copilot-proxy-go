@@ -17,6 +17,9 @@ var (
 	claudeOpus4Re   = regexp.MustCompile(`^claude-opus-4-.*`)
 )
 
+// maxRequestBodySize is the maximum allowed request body size (100 MB).
+const maxRequestBodySize = 100 << 20
+
 // initiatorStr returns "agent" or "user".
 func initiatorStr(isAgent bool) string {
 	if isAgent {
