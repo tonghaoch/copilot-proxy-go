@@ -144,13 +144,16 @@ func translateMsgToResponsesInput(role string, blocks []ContentBlock, model stri
 				// Thinking blocks with @ in signature are Responses API reasoning items
 				if strings.Contains(b.Signature, "@") {
 					parts := strings.SplitN(b.Signature, "@", 2)
+					// Summary is required by the Responses API for reasoning input items.
+					summaryText := b.Thinking
+					if summaryText == "" || summaryText == "Thinking..." {
+						summaryText = "..."
+					}
 					item := ResponsesInput{
 						Type:             "reasoning",
 						ID:               parts[1],
 						EncryptedContent: parts[0],
-					}
-					if b.Thinking != "" && b.Thinking != "Thinking..." {
-						item.Summary = []SummaryItem{{Type: "summary_text", Text: b.Thinking}}
+						Summary:          []SummaryItem{{Type: "summary_text", Text: summaryText}},
 					}
 					items = append(items, item)
 				}
