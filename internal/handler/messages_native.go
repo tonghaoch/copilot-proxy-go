@@ -25,6 +25,9 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 		return
 	}
 
+	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
+	stripCacheControlScope(payload)
+
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload, req)
 

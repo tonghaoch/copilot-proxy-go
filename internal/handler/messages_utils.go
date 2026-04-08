@@ -177,6 +177,26 @@ func getToolResultText(raw json.RawMessage) string {
 	return string(raw)
 }
 
+// stripCacheControlScope recursively removes the "scope" field from any
+// "cache_control" object in the payload. Claude Code 2.1.89+ sends
+// {"type":"ephemeral","scope":"..."} but Copilot's backend rejects the
+// extra field with a 400 error.
+func stripCacheControlScope(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		if cc, ok := val["cache_control"].(map[string]any); ok {
+			delete(cc, "scope")
+		}
+		for _, child := range val {
+			stripCacheControlScope(child)
+		}
+	case []any:
+		for _, item := range val {
+			stripCacheControlScope(item)
+		}
+	}
+}
+
 // claudeMDRe matches "Contents of /path/to/CLAUDE.md (..." followed by content.
 var claudeMDRe = regexp.MustCompile(`Contents of (/[^\s]+/CLAUDE\.md)(?: \([^)]*\))?:\s*\n([\s\S]*?)(?:\n\n(?:Contents of /|$))`)
 
