@@ -209,18 +209,26 @@ func mapEffort(effort string) string {
 	}
 }
 
-// filterBetaHeader removes claude-code-20250219 from the anthropic-beta header.
+// filterBetaHeader strips beta tokens that Copilot's upstream rejects.
+// Notably, "context-1m-2025-08-07" is consumed by proxy logic (it triggers
+// routing to the Copilot -1m model variant) and must not be forwarded —
+// Copilot returns 400 "unsupported beta header(s)" otherwise.
 func filterBetaHeader(header string) string {
 	if header == "" {
 		return ""
+	}
+	drop := map[string]bool{
+		"claude-code-20250219":     true,
+		"context-1m-2025-08-07":    true,
 	}
 	parts := strings.Split(header, ",")
 	var filtered []string
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if p != "claude-code-20250219" && p != "" {
-			filtered = append(filtered, p)
+		if p == "" || drop[p] {
+			continue
 		}
+		filtered = append(filtered, p)
 	}
 	return strings.Join(filtered, ",")
 }

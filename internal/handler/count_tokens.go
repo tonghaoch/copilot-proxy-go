@@ -28,6 +28,12 @@ func CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	anthropicBeta := r.Header.Get("Anthropic-Beta")
+
+	// Translate Claude Code-style names → Copilot IDs and route 1M variants
+	// based on the context-1m-2025-08-07 beta header.
+	req.Model = ResolveCopilotModel(req.Model, anthropicBeta)
+
 	model := state.Global.FindModel(req.Model)
 
 	// Translate to OpenAI format to count
@@ -39,7 +45,6 @@ func CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	anthropicBeta := r.Header.Get("Anthropic-Beta")
 	count := estimateTokens(ccReq, model, req.Model, req.Tools, anthropicBeta)
 
 	w.Header().Set("Content-Type", "application/json")

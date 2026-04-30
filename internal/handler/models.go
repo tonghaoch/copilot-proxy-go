@@ -43,16 +43,22 @@ func Models(w http.ResponseWriter, r *http.Request) {
 		models = fetched
 	}
 
-	entries := make([]ModelEntry, len(models))
-	for i, m := range models {
-		entries[i] = ModelEntry{
-			ID:          m.ID,
+	entries := make([]ModelEntry, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		publicID := ToClaudeCodeName(m.ID)
+		if _, dup := seen[publicID]; dup {
+			continue
+		}
+		seen[publicID] = struct{}{}
+		entries = append(entries, ModelEntry{
+			ID:          publicID,
 			Object:      "model",
 			Type:        "model",
 			Created:     0,
-			OwnedBy:    m.OwnedBy,
+			OwnedBy:     m.OwnedBy,
 			DisplayName: m.Name,
-		}
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

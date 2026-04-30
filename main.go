@@ -22,6 +22,7 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/auth"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
+	"github.com/tonghaoch/copilot-proxy-go/internal/handler"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/server"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
@@ -439,10 +440,19 @@ func setupProxy() {
 }
 
 func runClaudeCodeSetup(port int, models []state.Model) error {
-	// Build sorted option list
-	ids := make([]string, len(models))
-	for i, m := range models {
-		ids[i] = m.ID
+	// Build sorted option list. Copilot model IDs are translated into Claude
+	// Code's dashed format with the [1m] suffix for 1M variants, so the value
+	// written into env vars is exactly what Claude Code expects (it strips
+	// [1m] and adds the context-1m beta header itself).
+	seen := make(map[string]struct{}, len(models))
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		name := handler.ToClaudeCodeName(m.ID)
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		ids = append(ids, name)
 	}
 	sort.Strings(ids)
 

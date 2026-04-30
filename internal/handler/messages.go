@@ -43,8 +43,18 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 
 	betaHeader := r.Header.Get("Anthropic-Beta")
 
-	// Capture original model before routing
+	// Capture original model before routing (this is the Claude Code-style
+	// name, e.g. "claude-opus-4-7", before we translate to the Copilot ID).
 	originalModel := req.Model
+
+	// Translate Claude Code-style names → Copilot IDs and route 1M variants
+	// when the context-1m-2025-08-07 beta header is present. The raw body is
+	// rewritten in lockstep so handleWithMessagesAPI (which re-parses body
+	// into a map to preserve unknown fields) sees the same resolved model.
+	if newBody, resolved := RewriteModelInBody(body, betaHeader); resolved != "" {
+		body = newBody
+		req.Model = resolved
+	}
 
 	logger.For("messages").Log("model=%s stream=%v initiator=%s", req.Model, req.Stream, initiatorStr(isInitiatorAgent(req.Messages)))
 
