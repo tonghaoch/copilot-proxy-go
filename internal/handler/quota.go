@@ -29,14 +29,18 @@ func isWarmupRequest(req *AnthropicRequest, betaHeader string) bool {
 // Returns true if the model was changed.
 func applySmallModelIfNeeded(req *AnthropicRequest, betaHeader string) bool {
 	cfg := config.Get()
+	// Tolerate dash-format Claude IDs in config (e.g. claude-haiku-4-5) by
+	// running the override through the same resolver as request entries —
+	// otherwise the override would set a model name FindModel can't match.
+	smallModel := ResolveCopilotModel(cfg.SmallModel, "")
 
 	if cfg.CompactUseSmallModel && isCompactRequest(req) {
-		req.Model = cfg.SmallModel
+		req.Model = smallModel
 		return true
 	}
 
 	if isWarmupRequest(req, betaHeader) && !isCompactRequest(req) {
-		req.Model = cfg.SmallModel
+		req.Model = smallModel
 		return true
 	}
 

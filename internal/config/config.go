@@ -144,6 +144,22 @@ func Get() *Config {
 	return current
 }
 
+// SetSmallModel updates the small model field and persists the config to disk.
+// Used by the --claude-code TUI so the user's fast-model selection drives both
+// Claude Code's env vars and the proxy's compact/warmup quota optimization.
+func SetSmallModel(model string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if current == nil {
+		current = defaultConfig()
+	}
+	if current.SmallModel == model {
+		return nil
+	}
+	current.SmallModel = model
+	return save(current)
+}
+
 // GetExtraPrompt returns the extra prompt for a model, if any.
 func GetExtraPrompt(model string) string {
 	cfg := Get()

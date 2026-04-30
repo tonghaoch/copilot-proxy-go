@@ -466,6 +466,18 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 		return fmt.Errorf("model selection cancelled: %w", err)
 	}
 
+	// Persist the small model selection (translated back to the Copilot ID)
+	// so the proxy's compact/warmup quota optimization in
+	// applySmallModelIfNeeded uses the user's choice instead of falling back
+	// to the gpt-5-mini default. Without this, Claude Code's fast model env
+	// var and the proxy's quota override would disagree.
+	copilotSmall := handler.ResolveCopilotModel(smallModel, "")
+	if err := config.SetSmallModel(copilotSmall); err != nil {
+		slog.Warn("failed to persist small model to config", "error", err)
+	} else {
+		slog.Info("config.smallModel updated", "model", copilotSmall)
+	}
+
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	vars := []shell.EnvVar{
