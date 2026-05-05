@@ -74,6 +74,39 @@ func detectWindows() ShellType {
 	return Cmd
 }
 
+// QuoteArg quotes a single command argument for the target shell.
+func QuoteArg(shellType ShellType, value string) string {
+	switch shellType {
+	case PowerShell:
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	case Cmd:
+		return `"` + escapeCmdValue(value) + `"`
+	default:
+		return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+	}
+}
+
+func quoteEnvValue(shellType ShellType, value string) string {
+	if shellType == Cmd {
+		return escapeCmdValue(value)
+	}
+	return QuoteArg(shellType, value)
+}
+
+func escapeCmdValue(value string) string {
+	replacer := strings.NewReplacer(
+		`^`, `^^`,
+		`&`, `^&`,
+		`|`, `^|`,
+		`<`, `^<`,
+		`>`, `^>`,
+		`"`, `^"`,
+		`%`, `^%`,
+		`!`, `^^!`,
+	)
+	return replacer.Replace(value)
+}
+
 // EnvVar represents a key-value environment variable.
 type EnvVar struct {
 	Key   string
@@ -98,7 +131,7 @@ func GenerateExportScript(shellType ShellType, vars []EnvVar, command string) st
 func generatePowerShell(vars []EnvVar, command string) string {
 	var parts []string
 	for _, v := range vars {
-		parts = append(parts, fmt.Sprintf(`$env:%s = "%s"`, v.Key, v.Value))
+		parts = append(parts, fmt.Sprintf(`$env:%s = %s`, v.Key, quoteEnvValue(PowerShell, v.Value)))
 	}
 	if command != "" {
 		parts = append(parts, command)
@@ -109,7 +142,7 @@ func generatePowerShell(vars []EnvVar, command string) string {
 func generateCmd(vars []EnvVar, command string) string {
 	var parts []string
 	for _, v := range vars {
-		parts = append(parts, fmt.Sprintf("set %s=%s", v.Key, v.Value))
+		parts = append(parts, fmt.Sprintf(`set "%s=%s"`, v.Key, quoteEnvValue(Cmd, v.Value)))
 	}
 	if command != "" {
 		parts = append(parts, command)
@@ -120,7 +153,7 @@ func generateCmd(vars []EnvVar, command string) string {
 func generateFish(vars []EnvVar, command string) string {
 	var parts []string
 	for _, v := range vars {
-		parts = append(parts, fmt.Sprintf("set -gx %s %s", v.Key, v.Value))
+		parts = append(parts, fmt.Sprintf("set -gx %s %s", v.Key, quoteEnvValue(Fish, v.Value)))
 	}
 	if command != "" {
 		parts = append(parts, command)
@@ -131,7 +164,7 @@ func generateFish(vars []EnvVar, command string) string {
 func generateBashZsh(vars []EnvVar, command string) string {
 	var exports []string
 	for _, v := range vars {
-		exports = append(exports, fmt.Sprintf(`%s="%s"`, v.Key, v.Value))
+		exports = append(exports, fmt.Sprintf(`%s=%s`, v.Key, quoteEnvValue(Bash, v.Value)))
 	}
 	result := "export " + strings.Join(exports, " ")
 	if command != "" {

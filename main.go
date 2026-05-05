@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,6 +64,7 @@ func startCmd() *cobra.Command {
 		rateLimitSeconds int
 		rateLimitWait    bool
 		claudeCode       bool
+		codex            bool
 		proxyEnv         bool
 	)
 
@@ -70,6 +72,10 @@ func startCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the Copilot API proxy server",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if claudeCode && codex {
+				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
+			}
+
 			setupLogging(verbose)
 			state.Global.SetAccountType(accountType)
 			state.Global.SetShowToken(showToken)
@@ -115,6 +121,13 @@ func startCmd() *cobra.Command {
 			if claudeCode {
 				if err := runClaudeCodeSetup(port, models); err != nil {
 					slog.Warn("claude-code setup failed", "error", err)
+				}
+			}
+
+			// Codex interactive setup
+			if codex {
+				if err := runCodexSetup(port, models); err != nil {
+					slog.Warn("codex setup failed", "error", err)
 				}
 			}
 
@@ -166,6 +179,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&rateLimitSeconds, "rate-limit", "r", 0, "minimum seconds between requests (0 = disabled)")
 	cmd.Flags().BoolVarP(&rateLimitWait, "wait", "w", false, "wait instead of rejecting on rate limit")
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
+	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
 
 	return cmd
@@ -439,6 +453,83 @@ func setupProxy() {
 	}
 }
 
+func responsesCapableModelIDs(models []state.Model) []string {
+	seen := make(map[string]struct{}, len(models))
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		for _, endpoint := range m.SupportedEndpoints {
+			if endpoint != "/responses" {
+				continue
+			}
+			if _, dup := seen[m.ID]; dup {
+				break
+			}
+			seen[m.ID] = struct{}{}
+			ids = append(ids, m.ID)
+			break
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func codexAPIKey() string {
+	keys := config.GetAPIKeys()
+	if len(keys) > 0 {
+		return keys[0]
+	}
+	return "copilot-proxy"
+}
+
+func buildCodexCommand(shellType shell.ShellType, model, baseURL string) string {
+	overrides := []string{
+		"model=" + strconv.Quote(model),
+		"model_provider=" + strconv.Quote("copilot-proxy"),
+		"model_providers.copilot-proxy.name=" + strconv.Quote("Copilot Proxy"),
+		"model_providers.copilot-proxy.base_url=" + strconv.Quote(baseURL),
+		"model_providers.copilot-proxy.env_key=" + strconv.Quote("CODEX_API_KEY"),
+		"model_providers.copilot-proxy.wire_api=" + strconv.Quote("responses"),
+	}
+
+	parts := []string{"codex"}
+	for _, override := range overrides {
+		parts = append(parts, "-c", shell.QuoteArg(shellType, override))
+	}
+	return strings.Join(parts, " ")
+}
+
+func runCodexSetup(port int, models []state.Model) error {
+	ids := responsesCapableModelIDs(models)
+	model, err := runSelect("Select Codex model", ids)
+	if err != nil {
+		return fmt.Errorf("model selection cancelled: %w", err)
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+	shellType := shell.Detect()
+	vars := []shell.EnvVar{
+		{Key: "CODEX_API_KEY", Value: codexAPIKey()},
+		{Key: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
+		{Key: "no_proxy", Value: "localhost,127.0.0.1,::1"},
+	}
+	script := shell.GenerateExportScript(shellType, vars, buildCodexCommand(shellType, model, baseURL))
+
+	fmt.Println()
+	fmt.Println("  Generated command:")
+	fmt.Println()
+	fmt.Printf("  %s\n", script)
+	fmt.Println()
+
+	if err := shell.CopyToClipboard(script); err != nil {
+		fmt.Println("  (Could not copy to clipboard — paste the command above)")
+	} else {
+		fmt.Println("  Copied to clipboard!")
+	}
+	fmt.Println()
+
+	return nil
+}
+
 func runClaudeCodeSetup(port int, models []state.Model) error {
 	// Build sorted option list. Copilot model IDs are translated into Claude
 	// Code's dashed format with the [1m] suffix for 1M variants, so the value
@@ -525,6 +616,10 @@ type selectModel struct {
 }
 
 func runSelect(title string, items []string) (string, error) {
+	if len(items) == 0 {
+		return "", fmt.Errorf("no items available")
+	}
+
 	m := selectModel{title: title, items: items}
 	p := tea.NewProgram(m)
 	final, err := p.Run()

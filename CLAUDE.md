@@ -22,6 +22,9 @@ go build -o copilot-proxy-go .
 # Start with Claude Code interactive setup
 ./copilot-proxy-go start --claude-code
 
+# Start with Codex CLI interactive setup
+./copilot-proxy-go start --codex
+
 # Check Copilot usage quota
 ./copilot-proxy-go check-usage
 
@@ -37,7 +40,7 @@ Go version: 1.25 (per go.mod)
 go test -v ./...
 ```
 
-Note: No test files exist yet. CI runs build + test.
+Note: Test files cover setup helpers. CI runs build + test.
 
 ## Project Structure
 
@@ -138,6 +141,7 @@ RealIP → RequestID → requestLogger → CORS → Recoverer → Auth → [Rate
 | `-g, --github-token` | — | GitHub token (skips device-code flow) |
 | `-a, --account-type` | "individual" | individual/business/enterprise |
 | `-c, --claude-code` | false | Interactive Claude Code model selection |
+| `--codex` | false | Interactive Codex CLI model selection |
 | `-v, --verbose` | false | Debug logging |
 | `-r, --rate-limit` | 0 | Min seconds between requests |
 | `-w, --wait` | false | Wait instead of rejecting rate-limited requests |

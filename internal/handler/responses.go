@@ -58,12 +58,14 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// apply_patch tool conversion: custom → function (if enabled in config)
+	// Convert tools Copilot does not accept directly: apply_patch is configurable,
+	// while Codex's local_shell is always converted for Responses compatibility.
 	if tools, ok := payload["tools"].([]any); ok {
 		if config.Get().UseFunctionApplyPatch {
 			payload["tools"] = convertApplyPatchTools(tools)
+			tools = payload["tools"].([]any)
 		}
-		// Remove web_search tools
+		payload["tools"] = convertLocalShellTools(tools)
 		payload["tools"] = removeWebSearchTools(payload["tools"].([]any))
 	}
 
@@ -152,7 +154,6 @@ func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
-// convertApplyPatchTools converts apply_patch custom tools to function tools.
 func convertApplyPatchTools(tools []any) []any {
 	result := make([]any, 0, len(tools))
 	for _, t := range tools {
@@ -166,8 +167,8 @@ func convertApplyPatchTools(tools []any) []any {
 
 		if toolType == "custom" && toolName == "apply_patch" {
 			result = append(result, map[string]any{
-				"type": "function",
-				"name": "apply_patch",
+				"type":        "function",
+				"name":        "apply_patch",
 				"description": tool["description"],
 				"parameters": map[string]any{
 					"type": "object",
@@ -184,6 +185,51 @@ func convertApplyPatchTools(tools []any) []any {
 		} else {
 			result = append(result, t)
 		}
+	}
+	return result
+}
+
+// convertLocalShellTools converts Codex's local_shell tool to a function tool.
+func convertLocalShellTools(tools []any) []any {
+	result := make([]any, 0, len(tools))
+	for _, t := range tools {
+		tool, ok := t.(map[string]any)
+		if !ok {
+			result = append(result, t)
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType != "local_shell" {
+			result = append(result, t)
+			continue
+		}
+
+		result = append(result, map[string]any{
+			"type":        "function",
+			"name":        "local_shell",
+			"description": "Run a shell command locally.",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{
+						"type":        "array",
+						"items":       map[string]string{"type": "string"},
+						"description": "Command and arguments to execute.",
+					},
+					"workdir": map[string]string{
+						"type":        "string",
+						"description": "Working directory for the command.",
+					},
+					"timeout_ms": map[string]string{
+						"type":        "integer",
+						"description": "Maximum execution time in milliseconds.",
+					},
+				},
+				"required":             []string{"command"},
+				"additionalProperties": false,
+			},
+			"strict": false,
+		})
 	}
 	return result
 }

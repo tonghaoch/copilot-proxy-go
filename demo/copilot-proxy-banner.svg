@@ -1,0 +1,81 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Copilot Proxy Go banner</title>
+  <desc id="desc">GitHub Copilot routed through Copilot Proxy Go to Claude Code, Codex CLI, OpenAI API, Anthropic API, Cursor, and OpenCode.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#07111F"/>
+      <stop offset="0.58" stop-color="#0B1B2D"/>
+      <stop offset="1" stop-color="#10251E"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#122238"/>
+      <stop offset="1" stop-color="#0E1726"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="420" y1="90" x2="780" y2="270" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#58A6FF"/>
+      <stop offset="1" stop-color="#42D392"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L9 5L1 9" stroke="#58A6FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="360" rx="28" fill="url(#bg)"/>
+  <path d="M0 284C178 240 273 332 439 286C579 247 620 160 760 145C905 130 1001 207 1200 156V360H0V284Z" fill="#42D392" opacity="0.08"/>
+  <path d="M0 82C164 28 313 62 453 111C604 164 718 162 852 108C984 55 1086 37 1200 65" stroke="#58A6FF" stroke-opacity="0.12" stroke-width="2"/>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="64" y="72" fill="#E6EDF3" font-size="34" font-weight="750">Copilot Proxy Go</text>
+    <text x="64" y="107" fill="#9FB0C3" font-size="18">Use GitHub Copilot with Claude Code, Codex CLI, and OpenAI/Anthropic-compatible clients</text>
+
+    <g filter="url(#shadow)">
+      <rect x="64" y="150" width="260" height="118" rx="16" fill="url(#panel)" stroke="#263A52"/>
+      <circle cx="94" cy="181" r="8" fill="#42D392"/>
+      <text x="114" y="188" fill="#E6EDF3" font-size="22" font-weight="700">GitHub Copilot</text>
+      <text x="94" y="224" fill="#9FB0C3" font-size="15">Subscription-backed models</text>
+      <text x="94" y="248" fill="#75869A" font-size="13">auth, token refresh, model list</text>
+    </g>
+
+    <g filter="url(#shadow)">
+      <rect x="386" y="126" width="420" height="166" rx="20" fill="#0D1626" stroke="url(#accent)" stroke-width="2"/>
+      <rect x="410" y="146" width="372" height="134" rx="9" fill="#111D31" stroke="#263A52"/>
+      <path d="M410 186H782" stroke="#263A52"/>
+      <circle cx="431" cy="166" r="5" fill="#FF6B6B"/>
+      <circle cx="449" cy="166" r="5" fill="#FFD166"/>
+      <circle cx="467" cy="166" r="5" fill="#42D392"/>
+      <text x="430" y="216" fill="#E6EDF3" font-size="30" font-weight="800">OpenAI + Anthropic</text>
+      <text x="430" y="246" fill="#9FB0C3" font-size="16">local Go proxy on localhost:4141</text>
+      <text x="430" y="266" fill="#58A6FF" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">/v1/messages  /v1/responses  /chat/completions</text>
+    </g>
+
+    <path d="M334 209H371" stroke="#58A6FF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+    <path d="M816 209H853" stroke="#58A6FF" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="868" y="113" width="292" height="52" rx="14" fill="#102033" stroke="#263A52"/>
+      <text x="894" y="147" fill="#E6EDF3" font-size="19" font-weight="700">Claude Code</text>
+      <text x="1027" y="147" fill="#42D392" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">--claude-code</text>
+
+      <rect x="868" y="183" width="292" height="52" rx="14" fill="#102033" stroke="#263A52"/>
+      <text x="894" y="217" fill="#E6EDF3" font-size="19" font-weight="700">Codex CLI</text>
+      <text x="1027" y="217" fill="#42D392" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">--codex</text>
+
+      <rect x="868" y="253" width="292" height="52" rx="14" fill="#102033" stroke="#263A52"/>
+      <text x="894" y="287" fill="#E6EDF3" font-size="19" font-weight="700">Cursor / OpenCode</text>
+    </g>
+
+    <g opacity="0.95">
+      <rect x="64" y="314" width="178" height="30" rx="15" fill="#11263D" stroke="#294760"/>
+      <text x="84" y="334" fill="#9FD7FF" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">OpenAI API</text>
+      <rect x="256" y="314" width="196" height="30" rx="15" fill="#14263A" stroke="#2F465F"/>
+      <text x="276" y="334" fill="#B7C8FF" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">Anthropic API</text>
+      <rect x="466" y="314" width="178" height="30" rx="15" fill="#112A24" stroke="#315C4E"/>
+      <text x="486" y="334" fill="#A9F3CE" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">Responses API</text>
+      <rect x="658" y="314" width="172" height="30" rx="15" fill="#112A24" stroke="#315C4E"/>
+      <text x="678" y="334" fill="#A9F3CE" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">proxy-env</text>
+    </g>
+  </g>
+</svg>
