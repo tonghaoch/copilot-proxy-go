@@ -2,6 +2,9 @@
   <title id="title">Copilot Proxy Go banner</title>
   <desc id="desc">GitHub Copilot routed through Copilot Proxy Go to Claude Code, Codex CLI, OpenAI API, Anthropic API, Cursor, and OpenCode.</desc>
   <defs>
+    <clipPath id="bannerClip">
+      <rect width="1200" height="360" rx="28"/>
+    </clipPath>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="360" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#07111F"/>
       <stop offset="0.58" stop-color="#0B1B2D"/>
@@ -23,6 +26,7 @@
     </marker>
   </defs>
 
+  <g clip-path="url(#bannerClip)">
   <rect width="1200" height="360" rx="28" fill="url(#bg)"/>
   <path d="M0 284C178 240 273 332 439 286C579 247 620 160 760 145C905 130 1001 207 1200 156V360H0V284Z" fill="#42D392" opacity="0.08"/>
   <path d="M0 82C164 28 313 62 453 111C604 164 718 162 852 108C984 55 1086 37 1200 65" stroke="#58A6FF" stroke-opacity="0.12" stroke-width="2"/>
@@ -77,5 +81,6 @@
       <rect x="658" y="314" width="172" height="30" rx="15" fill="#112A24" stroke="#315C4E"/>
       <text x="678" y="334" fill="#A9F3CE" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">proxy-env</text>
     </g>
+  </g>
   </g>
 </svg>
