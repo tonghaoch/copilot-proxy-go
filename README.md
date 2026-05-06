@@ -1,8 +1,14 @@
+<img src="demo/copilot-proxy-banner.svg" alt="Use GitHub Copilot with Claude Code, Codex CLI, and OpenAI/Anthropic-compatible API clients" width="100%" />
+
+<div align="center">
+  
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R6R01Z1AEV)
+
+</div>
+
 # Copilot Proxy Go
 
 [![Go](https://github.com/tonghaoch/copilot-proxy-go/actions/workflows/go.yml/badge.svg?branch=master)](https://github.com/tonghaoch/copilot-proxy-go/actions/workflows/go.yml)
-
-<img src="demo/copilot-proxy-banner.svg" alt="Use GitHub Copilot with Claude Code, Codex CLI, and OpenAI/Anthropic-compatible API clients" width="100%" />
 
 Use **GitHub Copilot** with **Claude Code**, **Codex CLI**, Cursor, OpenCode, and any OpenAI/Anthropic-compatible client.
 
