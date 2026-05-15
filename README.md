@@ -109,6 +109,16 @@ export ANTHROPIC_SMALL_FAST_MODEL=gpt-5-mini
 claude
 ```
 
+### Persistent setup with `--save-settings`
+
+```bash
+./copilot-proxy-go start --claude-code --save-settings
+```
+
+Instead of printing a shell `export` command, this writes the selected models and proxy URL directly into the `env` field of `~/.claude/settings.json`. Every subsequent `claude` invocation — in any shell or spawned by any tool — picks up the proxy automatically, without relying on environment variables in the current session.
+
+The existing file (if present) is backed up to `settings.json.bak` before each write. Other top-level fields (e.g. `permissions`, `hooks`) and any user-defined env keys are preserved; only the proxy-related `ANTHROPIC_*` and `CLAUDE_CODE_*` keys are overwritten.
+
 ## Usage with Codex CLI
 
 ```bash
@@ -157,6 +167,7 @@ Flags:
   -g, --github-token string   GitHub OAuth token (skips device code flow)
   -a, --account-type string   individual, business, or enterprise (default "individual")
   -c, --claude-code           interactive model selection for Claude Code
+      --save-settings         with --claude-code, write env vars to ~/.claude/settings.json instead of printing a shell command
       --codex                 interactive model selection for Codex CLI
   -v, --verbose               enable verbose/debug logging
   -r, --rate-limit int        minimum seconds between requests (0 = disabled)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -65,6 +66,7 @@ func startCmd() *cobra.Command {
 		rateLimitWait    bool
 		claudeCode       bool
 		codex            bool
+		saveSettings     bool
 		proxyEnv         bool
 	)
 
@@ -74,6 +76,9 @@ func startCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
+			}
+			if saveSettings && !claudeCode {
+				return fmt.Errorf("--save-settings only works together with --claude-code")
 			}
 
 			setupLogging(verbose)
@@ -119,7 +124,7 @@ func startCmd() *cobra.Command {
 
 			// Claude Code interactive setup
 			if claudeCode {
-				if err := runClaudeCodeSetup(port, models); err != nil {
+				if err := runClaudeCodeSetup(port, models, saveSettings); err != nil {
 					slog.Warn("claude-code setup failed", "error", err)
 				}
 			}
@@ -180,6 +185,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&rateLimitWait, "wait", "w", false, "wait instead of rejecting on rate limit")
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
+	cmd.Flags().BoolVar(&saveSettings, "save-settings", false, "write env vars into ~/.claude/settings.json instead of printing a shell command (requires --claude-code)")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
 
 	return cmd
@@ -530,7 +536,7 @@ func runCodexSetup(port int, models []state.Model) error {
 	return nil
 }
 
-func runClaudeCodeSetup(port int, models []state.Model) error {
+func runClaudeCodeSetup(port int, models []state.Model, saveSettings bool) error {
 	// Build sorted option list. Copilot model IDs are translated into Claude
 	// Code's dashed format with the [1m] suffix for 1M variants, so the value
 	// written into env vars is exactly what Claude Code expects (it strips
@@ -582,6 +588,22 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 		{Key: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", Value: "1"},
 	}
 
+	if saveSettings {
+		path, err := saveClaudeCodeSettings(vars)
+		if err != nil {
+			return fmt.Errorf("failed to write Claude Code settings: %w", err)
+		}
+		fmt.Println()
+		fmt.Println("  Updated Claude Code settings:")
+		fmt.Println()
+		fmt.Printf("  %s\n", path)
+		fmt.Println()
+		fmt.Println("  Any newly spawned `claude` process (including those launched by")
+		fmt.Println("  Open Design or other tools) will now route through this proxy.")
+		fmt.Println()
+		return nil
+	}
+
 	shellType := shell.Detect()
 	script := shell.GenerateExportScript(shellType, vars, "claude")
 
@@ -599,6 +621,78 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	fmt.Println()
 
 	return nil
+}
+
+// claudeCodeSettingsPath returns the absolute path to ~/.claude/settings.json
+// (cross-platform via os.UserHomeDir).
+func claudeCodeSettingsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not resolve user home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude", "settings.json"), nil
+}
+
+// saveClaudeCodeSettings merges the given env vars into the `env` field of
+// Claude Code's settings.json. It preserves all other top-level fields and all
+// other env keys the user has set. The previous file (if any) is copied to
+// settings.json.bak before being overwritten. Returns the absolute path of the
+// written file.
+func saveClaudeCodeSettings(vars []shell.EnvVar) (string, error) {
+	path, err := claudeCodeSettingsPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("could not create %s: %w", filepath.Dir(path), err)
+	}
+
+	root := make(map[string]json.RawMessage)
+	envMap := make(map[string]string)
+
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if len(existing) > 0 {
+			if err := json.Unmarshal(existing, &root); err != nil {
+				return "", fmt.Errorf("existing %s is not valid JSON; refusing to overwrite (fix or delete it manually): %w", path, err)
+			}
+			if raw, ok := root["env"]; ok {
+				if err := json.Unmarshal(raw, &envMap); err != nil {
+					return "", fmt.Errorf("existing %s has an `env` field that is not a string->string object; refusing to overwrite: %w", path, err)
+				}
+			}
+		}
+		// Back up the existing file before writing.
+		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
+			return "", fmt.Errorf("could not write backup %s.bak: %w", path, err)
+		}
+	case os.IsNotExist(err):
+		// No existing file — nothing to back up.
+	default:
+		return "", fmt.Errorf("could not read %s: %w", path, err)
+	}
+
+	for _, v := range vars {
+		envMap[v.Key] = v.Value
+	}
+
+	envJSON, err := json.Marshal(envMap)
+	if err != nil {
+		return "", fmt.Errorf("could not marshal env map: %w", err)
+	}
+	root["env"] = envJSON
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("could not marshal settings: %w", err)
+	}
+	out = append(out, '\n')
+
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return "", fmt.Errorf("could not write %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // --- interactive select TUI ---
