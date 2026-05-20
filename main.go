@@ -500,7 +500,7 @@ func buildCodexCommand(shellType shell.ShellType, model, baseURL string) string 
 
 func runCodexSetup(port int, models []state.Model) error {
 	ids := responsesCapableModelIDs(models)
-	model, err := runSelect("Select Codex model", ids)
+	model, err := runSelect("Select Codex model", ids, palettePrimary)
 	if err != nil {
 		return fmt.Errorf("model selection cancelled: %w", err)
 	}
@@ -547,12 +547,12 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	}
 	sort.Strings(ids)
 
-	primaryModel, err := runSelect("Select primary model", ids)
+	primaryModel, err := runSelect("Select primary model", ids, palettePrimary)
 	if err != nil {
 		return fmt.Errorf("model selection cancelled: %w", err)
 	}
 
-	smallModel, err := runSelect("Select small/fast model", ids)
+	smallModel, err := runSelect("Select small/fast model", ids, paletteSmall)
 	if err != nil {
 		return fmt.Errorf("model selection cancelled: %w", err)
 	}
@@ -605,6 +605,16 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 
 const selectHeight = 15
 
+type selectPalette struct {
+	border lipgloss.Color
+	accent lipgloss.Color
+}
+
+var (
+	palettePrimary = selectPalette{border: lipgloss.Color("63"), accent: lipgloss.Color("12")}  // purple border + bright blue accent
+	paletteSmall   = selectPalette{border: lipgloss.Color("36"), accent: lipgloss.Color("42")}  // teal border + green accent
+)
+
 type selectModel struct {
 	title   string
 	items   []string
@@ -613,14 +623,15 @@ type selectModel struct {
 	result  string
 	done    bool
 	aborted bool
+	palette selectPalette
 }
 
-func runSelect(title string, items []string) (string, error) {
+func runSelect(title string, items []string, palette selectPalette) (string, error) {
 	if len(items) == 0 {
 		return "", fmt.Errorf("no items available")
 	}
 
-	m := selectModel{title: title, items: items}
+	m := selectModel{title: title, items: items, palette: palette}
 	p := tea.NewProgram(m)
 	final, err := p.Run()
 	if err != nil {
@@ -670,8 +681,8 @@ func (m selectModel) View() string {
 		return ""
 	}
 
-	borderColor := lipgloss.Color("63")
-	accentColor := lipgloss.Color("12")
+	borderColor := m.palette.border
+	accentColor := m.palette.accent
 	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
 	thumbStyle := lipgloss.NewStyle().Foreground(accentColor)
 	cursorStyle := lipgloss.NewStyle().Foreground(accentColor)
