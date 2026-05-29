@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,8 +32,10 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload, req)
 
-	// Set up adaptive thinking if supported
-	applyAdaptiveThinkingInMap(payload, req)
+	// Set up adaptive thinking if supported. Returns the effort the user asked
+	// for (post-clamp); used by the 400-retry path to pick a fallback when
+	// Copilot rejects it.
+	requestedEffort := applyAdaptiveThinkingInMap(payload, req)
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -60,8 +63,18 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 
 	resp, err := service.ProxyMessages(body, betaHeader, vision, isAgent)
 	if err != nil {
-		api.ForwardError(w, err)
-		return
+		// If Copilot rejected our effort, cache the supported list, rewrite
+		// the payload, and retry exactly once. Anything else propagates.
+		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
+			if retryErr != nil {
+				api.ForwardError(w, retryErr)
+				return
+			}
+			resp = retryResp
+		} else {
+			api.ForwardError(w, err)
+			return
+		}
 	}
 	defer resp.Body.Close()
 
@@ -179,22 +192,97 @@ func filterThinkingBlocksInMap(payload map[string]any, req *AnthropicRequest) {
 }
 
 // applyAdaptiveThinkingInMap modifies the thinking config and output_config
-// in the map representation. Only applies when the model supports adaptive thinking.
-func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest) {
+// in the map representation. Only applies when the model supports adaptive
+// thinking. Returns the effort actually written to payload (after consulting
+// the session effort cache); "" when no effort was set.
+func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest) string {
 	model := state.Global.FindModel(req.Model)
 	if model == nil || !model.Capabilities.Supports.AdaptiveThinking {
-		return
+		return ""
 	}
 
 	// Set thinking type to adaptive
 	payload["thinking"] = map[string]string{"type": "adaptive"}
 
-	// Set output_config effort
-	effort := config.GetReasoningEffort(normalizeModelName(req.Model))
-	mapped := mapEffort(effort)
-	if mapped != "" {
-		payload["output_config"] = map[string]string{"effort": mapped}
+	// Set output_config effort, clamping against any cached restrictions for
+	// this model. If Copilot has previously rejected our requested effort for
+	// this model in the current session, clampEffort downgrades to the
+	// closest supported value.
+	requested := mapEffort(config.GetReasoningEffort(normalizeModelName(req.Model)))
+	if requested == "" {
+		return ""
 	}
+	effective := clampEffort(req.Model, requested)
+	if effective != requested {
+		slog.Debug("effort clamped from cache", "model", req.Model, "requested", requested, "using", effective)
+	}
+	setOutputConfigEffort(payload, effective)
+	return effective
+}
+
+// setOutputConfigEffort writes payload["output_config"]["effort"] = effort,
+// preserving any other keys already present in output_config. Both the
+// create and update paths use map[string]any so a second call (e.g. during
+// retry) can still read what the first call wrote.
+func setOutputConfigEffort(payload map[string]any, effort string) {
+	if effort == "" {
+		return
+	}
+	existing, ok := payload["output_config"].(map[string]any)
+	if !ok {
+		existing = map[string]any{}
+		payload["output_config"] = existing
+	}
+	existing["effort"] = effort
+}
+
+// maybeRetryWithFallbackEffort inspects an error from ProxyMessages. If it's
+// a 400 effort-rejection, it caches the supported list, rewrites payload with
+// the closest supported effort, and retries once. Returns:
+//
+//	retried = false          → caller should forward the original error
+//	retried = true, err = nil → retryResp is the new response, use it
+//	retried = true, err != nil → retry itself failed; caller should forward err
+func maybeRetryWithFallbackEffort(origErr error, payload map[string]any, req *AnthropicRequest, requestedEffort, betaHeader string, vision, isAgent bool) (retried bool, retryResp *http.Response, retryErr error) {
+	if requestedEffort == "" {
+		return false, nil, nil
+	}
+	var httpErr *api.HTTPError
+	if !errors.As(origErr, &httpErr) || httpErr.StatusCode != http.StatusBadRequest {
+		return false, nil, nil
+	}
+	rejectedModel, supported := parseEffortError(httpErr.Body)
+	if rejectedModel == "" || len(supported) == 0 {
+		return false, nil, nil
+	}
+	// Cache under both the inbound model name (what clampEffort sees on the
+	// next request from this client) and the Copilot-side name returned in
+	// the error (the authoritative ID, in case clients send other aliases).
+	effortSupportCache.Set(req.Model, supported)
+	if rejectedModel != req.Model {
+		effortSupportCache.Set(rejectedModel, supported)
+	}
+
+	fallback := pickClosestEffort(requestedEffort, supported)
+	if fallback == "" || fallback == requestedEffort {
+		// No usable alternative — propagate original error.
+		return false, nil, nil
+	}
+	slog.Warn("effort rejected, falling back",
+		"model", req.Model,
+		"copilot_model", rejectedModel,
+		"requested", requestedEffort,
+		"supported", supported,
+		"using", fallback,
+	)
+
+	setOutputConfigEffort(payload, fallback)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return true, nil, err
+	}
+	resp, err := service.ProxyMessages(body, betaHeader, vision, isAgent)
+	return true, resp, err
 }
 
 // mapEffort maps config reasoning effort values to Anthropic output_config effort.
