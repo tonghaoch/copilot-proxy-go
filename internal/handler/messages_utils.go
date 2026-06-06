@@ -197,6 +197,54 @@ func stripCacheControlScope(v any) {
 	}
 }
 
+// unsupportedTools are Anthropic hosted tool names Copilot rejects (executed
+// on Anthropic's side, so unproxyable). Keyed by snake_case "name", which
+// won't collide with Claude Code's PascalCase custom tools.
+var unsupportedTools = map[string]bool{
+	"image_generation": true,
+	"web_search":       true,
+	"web_fetch":        true,
+	"code_execution":   true,
+}
+
+func stripUnsupportedToolsInMap(payload map[string]any) {
+	rawTools, ok := payload["tools"].([]any)
+	if !ok {
+		return
+	}
+	filtered := make([]any, 0, len(rawTools))
+	for _, t := range rawTools {
+		if tm, ok := t.(map[string]any); ok {
+			if name, _ := tm["name"].(string); unsupportedTools[name] {
+				continue
+			}
+		}
+		filtered = append(filtered, t)
+	}
+	if len(filtered) == len(rawTools) {
+		return
+	}
+	if len(filtered) == 0 {
+		delete(payload, "tools")
+	} else {
+		payload["tools"] = filtered
+	}
+}
+
+func filterUnsupportedTools(req *AnthropicRequest) {
+	if len(req.Tools) == 0 {
+		return
+	}
+	filtered := req.Tools[:0]
+	for _, t := range req.Tools {
+		if unsupportedTools[t.Name] {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	req.Tools = filtered
+}
+
 // claudeMDRe matches "Contents of /path/to/CLAUDE.md (..." followed by content.
 var claudeMDRe = regexp.MustCompile(`Contents of (/[^\s]+/CLAUDE\.md)(?: \([^)]*\))?:\s*\n([\s\S]*?)(?:\n\n(?:Contents of /|$))`)
 
