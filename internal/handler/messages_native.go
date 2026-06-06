@@ -29,6 +29,9 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
 	stripCacheControlScope(payload)
 
+	// Strip tools Copilot rejects (e.g. image_generation)
+	stripUnsupportedToolsInMap(payload)
+
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload, req)
 

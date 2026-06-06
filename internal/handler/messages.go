@@ -80,6 +80,9 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	// Tool result + text block merging
 	mergeToolResultBlocks(&req)
 
+	// Drop tools Copilot rejects (native path strips its own raw-map copy)
+	filterUnsupportedTools(&req)
+
 	// Look up the model
 	model := state.Global.FindModel(req.Model)
 
