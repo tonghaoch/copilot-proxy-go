@@ -71,8 +71,8 @@ func translateToResponses(req *AnthropicRequest, extraPrompt string) (*Responses
 				json.Unmarshal(t.InputSchema, &params)
 			}
 			tools = append(tools, map[string]any{
-				"type": "function",
-				"name": t.Name,
+				"type":        "function",
+				"name":        t.Name,
 				"description": t.Description,
 				"parameters":  params,
 			})
@@ -180,8 +180,7 @@ func translateMsgToResponsesInput(role string, blocks []ContentBlock, model stri
 		// Add text as a message (use output_text content type for assistant)
 		if len(textParts) > 0 {
 			text := strings.Join(textParts, "")
-			var content any
-			content = []map[string]string{{"type": "output_text", "text": text}}
+			var content any = []map[string]string{{"type": "output_text", "text": text}}
 			msgItem := ResponsesInput{
 				Type:    "message",
 				Role:    "assistant",
@@ -245,7 +244,7 @@ func buildResponsesContent(blocks []ContentBlock) any {
 // parseSystemPromptForResponses builds the system instructions for the Responses API.
 // It appends extraPrompt to the first block before joining with spaces (matching TS).
 func parseSystemPromptForResponses(raw json.RawMessage, extraPrompt string) string {
-	if raw == nil || len(raw) == 0 {
+	if len(raw) == 0 {
 		return extraPrompt
 	}
 	// Try as string

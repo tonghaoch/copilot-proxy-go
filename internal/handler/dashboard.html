@@ -1338,17 +1338,18 @@ function renderModelsSection() {
   html += '</div>';
   html += '<div class="collapsible-body">';
   html += '<table class="models-table"><thead><tr>';
-  html += '<th>Model ID</th><th>Display Name</th><th>Owner</th>';
+  html += '<th>Model ID</th><th>Display Name</th><th>Context</th><th>Owner</th>';
   html += '</tr></thead><tbody>';
 
   for (const owner of sortedOwners) {
     if (sortedOwners.length > 1) {
-      html += '<tr class="model-group-header"><td colspan="3">' + escapeHtml(owner) + '</td></tr>';
+      html += '<tr class="model-group-header"><td colspan="4">' + escapeHtml(owner) + '</td></tr>';
     }
     for (const m of groups[owner]) {
       html += '<tr>';
       html += '<td><span class="model-id">' + escapeHtml(m.id) + '</span></td>';
       html += '<td>' + escapeHtml(m.display_name || m.id) + '</td>';
+      html += '<td>' + escapeHtml(formatContext(m.context_window)) + '</td>';
       html += '<td><span class="owner-badge">' + escapeHtml(m.owned_by || '\u2014') + '</span></td>';
       html += '</tr>';
     }
@@ -1356,6 +1357,20 @@ function renderModelsSection() {
 
   html += '</tbody></table></div></div>';
   return html;
+}
+
+// formatContext renders a context window token count as a compact human label
+// (1000000 -> "1M", 200000 -> "200K"). Returns "\u2014" when unknown.
+function formatContext(tokens) {
+  if (!tokens || tokens <= 0) return '\u2014';
+  if (tokens >= 1000000) {
+    const m = tokens / 1000000;
+    return (Number.isInteger(m) ? m : m.toFixed(1)) + 'M';
+  }
+  if (tokens >= 1000) {
+    return Math.round(tokens / 1000) + 'K';
+  }
+  return String(tokens);
 }
 
 // -- Raw JSON --

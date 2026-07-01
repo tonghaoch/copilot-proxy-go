@@ -7,24 +7,24 @@ import (
 
 // RequestRecord holds per-request metrics.
 type RequestRecord struct {
-	Timestamp   time.Time `json:"timestamp"`
-	Endpoint    string    `json:"endpoint"`    // messages, chat_completions, responses
-	Model       string    `json:"model"`       // original model requested
-	RoutedModel string    `json:"routed_model"` // after small-model routing
-	Backend     string    `json:"backend"`     // messages, responses, chat_completions
-	RequestType string    `json:"request_type"` // normal, compact, warmup
-	Initiator   string    `json:"initiator"`   // user, agent
-	HasVision   bool      `json:"has_vision"`
-	Streaming   bool      `json:"streaming"`
-	ToolCount   int       `json:"tool_count"`
-	ThinkingBudget int   `json:"thinking_budget"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CachedTokens int64   `json:"cached_tokens"`
-	StopReason  string    `json:"stop_reason"`
-	LatencyMs   int64     `json:"latency_ms"`
-	StatusCode  int       `json:"status_code"`
-	Error       string    `json:"error,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
+	Endpoint       string    `json:"endpoint"`     // messages, chat_completions, responses
+	Model          string    `json:"model"`        // original model requested
+	RoutedModel    string    `json:"routed_model"` // after small-model routing
+	Backend        string    `json:"backend"`      // messages, responses, chat_completions
+	RequestType    string    `json:"request_type"` // normal, compact, warmup
+	Initiator      string    `json:"initiator"`    // user, agent
+	HasVision      bool      `json:"has_vision"`
+	Streaming      bool      `json:"streaming"`
+	ToolCount      int       `json:"tool_count"`
+	ThinkingBudget int       `json:"thinking_budget"`
+	InputTokens    int64     `json:"input_tokens"`
+	OutputTokens   int64     `json:"output_tokens"`
+	CachedTokens   int64     `json:"cached_tokens"`
+	StopReason     string    `json:"stop_reason"`
+	LatencyMs      int64     `json:"latency_ms"`
+	StatusCode     int       `json:"status_code"`
+	Error          string    `json:"error,omitempty"`
 }
 
 // ClaudeMDFile represents an extracted CLAUDE.md file from the system prompt.
@@ -35,16 +35,16 @@ type ClaudeMDFile struct {
 
 // SessionSnapshot holds session data updated on each Messages request.
 type SessionSnapshot struct {
-	ClaudeMDFiles   []ClaudeMDFile `json:"claude_md_files"`
-	Tools           []string       `json:"tools"`
-	MCPTools        []string       `json:"mcp_tools"`
-	ThinkingEnabled bool           `json:"thinking_enabled"`
-	ThinkingBudget  int            `json:"thinking_budget"`
-	ThinkingType    string         `json:"thinking_type"`
-	BetaFeatures    string         `json:"beta_features"`
+	ClaudeMDFiles   []ClaudeMDFile        `json:"claude_md_files"`
+	Tools           []string              `json:"tools"`
+	MCPTools        []string              `json:"mcp_tools"`
+	ThinkingEnabled bool                  `json:"thinking_enabled"`
+	ThinkingBudget  int                   `json:"thinking_budget"`
+	ThinkingType    string                `json:"thinking_type"`
+	BetaFeatures    string                `json:"beta_features"`
 	SubagentInfo    *SubagentInfoSnapshot `json:"subagent,omitempty"`
-	UserID          string         `json:"user_id"`
-	LastSeen        time.Time      `json:"last_seen"`
+	UserID          string                `json:"user_id"`
+	LastSeen        time.Time             `json:"last_seen"`
 }
 
 // SubagentInfoSnapshot holds subagent detection data for the session snapshot.
@@ -68,9 +68,9 @@ type Aggregates struct {
 
 // MetricsSnapshot is the read-consistent copy returned by Snapshot().
 type MetricsSnapshot struct {
-	Aggregates Aggregates       `json:"aggregates"`
-	Session    SessionSnapshot  `json:"session"`
-	Recent     []RequestRecord  `json:"recent"`
+	Aggregates Aggregates      `json:"aggregates"`
+	Session    SessionSnapshot `json:"session"`
+	Recent     []RequestRecord `json:"recent"`
 }
 
 const ringBufferSize = 200

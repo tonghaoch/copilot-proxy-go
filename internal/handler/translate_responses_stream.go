@@ -10,7 +10,7 @@ import (
 // from Responses API events to Anthropic SSE events.
 type ResponsesStreamState struct {
 	blockIndex       int
-	openBlockType    string // "text", "tool_use", "thinking", ""
+	openBlockType    string      // "text", "tool_use", "thinking", ""
 	toolCallBlocks   map[int]int // output_index -> Anthropic block index
 	hasStarted       bool
 	messageCompleted bool
@@ -61,8 +61,8 @@ func (s *ResponsesStreamState) TranslateEvent(eventType, data string) ([]SSEEven
 	case "response.created":
 		var evt struct {
 			Response struct {
-				ID    string         `json:"id"`
-				Model string         `json:"model"`
+				ID    string          `json:"id"`
+				Model string          `json:"model"`
 				Usage *ResponsesUsage `json:"usage"`
 			} `json:"response"`
 		}

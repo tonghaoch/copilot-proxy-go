@@ -481,7 +481,7 @@ func codexAPIKey() string {
 	return "copilot-proxy"
 }
 
-func buildCodexCommand(shellType shell.ShellType, model, baseURL string) string {
+func buildCodexCommand(shellType shell.ShellType, model, baseURL string, contextWindow int) string {
 	overrides := []string{
 		"model=" + strconv.Quote(model),
 		"model_provider=" + strconv.Quote("copilot-proxy"),
@@ -489,6 +489,12 @@ func buildCodexCommand(shellType shell.ShellType, model, baseURL string) string 
 		"model_providers.copilot-proxy.base_url=" + strconv.Quote(baseURL),
 		"model_providers.copilot-proxy.env_key=" + strconv.Quote("CODEX_API_KEY"),
 		"model_providers.copilot-proxy.wire_api=" + strconv.Quote("responses"),
+	}
+
+	// Codex defaults unknown models to a conservative context window. Pin the
+	// model's real window (a bare TOML int, not quoted) so it budgets correctly.
+	if contextWindow > 0 {
+		overrides = append(overrides, "model_context_window="+strconv.Itoa(contextWindow))
 	}
 
 	parts := []string{"codex"}
@@ -507,12 +513,20 @@ func runCodexSetup(port int, models []state.Model) error {
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 	shellType := shell.Detect()
+
+	// Look up the chosen model's real context window so the generated command
+	// pins it (Codex otherwise assumes a conservative default).
+	contextWindow := 0
+	if m := state.Global.FindModel(model); m != nil {
+		contextWindow = m.Capabilities.Limits.MaxContextWindowTokens
+	}
+
 	vars := []shell.EnvVar{
 		{Key: "CODEX_API_KEY", Value: codexAPIKey()},
 		{Key: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
 		{Key: "no_proxy", Value: "localhost,127.0.0.1,::1"},
 	}
-	script := shell.GenerateExportScript(shellType, vars, buildCodexCommand(shellType, model, baseURL))
+	script := shell.GenerateExportScript(shellType, vars, buildCodexCommand(shellType, model, baseURL, contextWindow))
 
 	fmt.Println()
 	fmt.Println("  Generated command:")
@@ -538,7 +552,7 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	seen := make(map[string]struct{}, len(models))
 	ids := make([]string, 0, len(models))
 	for _, m := range models {
-		name := handler.ToClaudeCodeName(m.ID)
+		name := handler.ToClaudeCodeName(m)
 		if _, dup := seen[name]; dup {
 			continue
 		}
@@ -562,7 +576,7 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	// applySmallModelIfNeeded uses the user's choice instead of falling back
 	// to the gpt-5-mini default. Without this, Claude Code's fast model env
 	// var and the proxy's quota override would disagree.
-	copilotSmall := handler.ResolveCopilotModel(smallModel, "")
+	copilotSmall := handler.ResolveCopilotModel(smallModel)
 	if err := config.SetSmallModel(copilotSmall); err != nil {
 		slog.Warn("failed to persist small model to config", "error", err)
 	} else {
@@ -611,8 +625,8 @@ type selectPalette struct {
 }
 
 var (
-	palettePrimary = selectPalette{border: lipgloss.Color("63"), accent: lipgloss.Color("12")}  // purple border + bright blue accent
-	paletteSmall   = selectPalette{border: lipgloss.Color("36"), accent: lipgloss.Color("42")}  // teal border + green accent
+	palettePrimary = selectPalette{border: lipgloss.Color("63"), accent: lipgloss.Color("12")} // purple border + bright blue accent
+	paletteSmall   = selectPalette{border: lipgloss.Color("36"), accent: lipgloss.Color("42")} // teal border + green accent
 )
 
 type selectModel struct {

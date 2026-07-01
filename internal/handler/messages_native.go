@@ -301,16 +301,17 @@ func mapEffort(effort string) string {
 }
 
 // filterBetaHeader strips beta tokens that Copilot's upstream rejects.
-// Notably, "context-1m-2025-08-07" is consumed by proxy logic (it triggers
-// routing to the Copilot -1m model variant) and must not be forwarded —
-// Copilot returns 400 "unsupported beta header(s)" otherwise.
+// Notably, "context-1m-2025-08-07" must be dropped — Copilot returns 400
+// "unsupported beta header(s)" if it is forwarded. (It no longer affects
+// model selection: Copilot ships context size as a per-model capability
+// rather than a separate -1m model variant.)
 func filterBetaHeader(header string) string {
 	if header == "" {
 		return ""
 	}
 	drop := map[string]bool{
-		"claude-code-20250219":     true,
-		"context-1m-2025-08-07":    true,
+		"claude-code-20250219":  true,
+		"context-1m-2025-08-07": true,
 	}
 	parts := strings.Split(header, ",")
 	var filtered []string
@@ -323,4 +324,3 @@ func filterBetaHeader(header string) string {
 	}
 	return strings.Join(filtered, ",")
 }
-

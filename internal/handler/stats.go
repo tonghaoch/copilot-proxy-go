@@ -11,15 +11,15 @@ import (
 
 // statsResponse is the JSON response for GET /api/stats.
 type statsResponse struct {
-	UptimeSeconds int64              `json:"uptime_seconds"`
-	TotalRequests int64              `json:"total_requests"`
-	Tokens        statsTokens        `json:"tokens"`
-	ModelCounts   map[string]int64   `json:"model_counts"`
-	BackendCounts map[string]int64   `json:"backend_counts"`
-	TypeCounts    map[string]int64   `json:"type_counts"`
-	Session       *statsSession      `json:"session"`
+	UptimeSeconds int64                 `json:"uptime_seconds"`
+	TotalRequests int64                 `json:"total_requests"`
+	Tokens        statsTokens           `json:"tokens"`
+	ModelCounts   map[string]int64      `json:"model_counts"`
+	BackendCounts map[string]int64      `json:"backend_counts"`
+	TypeCounts    map[string]int64      `json:"type_counts"`
+	Session       *statsSession         `json:"session"`
 	Recent        []state.RequestRecord `json:"recent"`
-	Config        statsConfig        `json:"config"`
+	Config        statsConfig           `json:"config"`
 }
 
 type statsTokens struct {
@@ -29,14 +29,14 @@ type statsTokens struct {
 }
 
 type statsSession struct {
-	ClaudeMDFiles   []state.ClaudeMDFile         `json:"claude_md_files"`
-	Tools           []string                      `json:"tools"`
-	MCPTools        []string                      `json:"mcp_tools"`
-	Thinking        statsThinking                 `json:"thinking"`
-	BetaFeatures    string                        `json:"beta_features"`
-	Subagent        *state.SubagentInfoSnapshot   `json:"subagent,omitempty"`
-	UserID          string                        `json:"user_id"`
-	LastSeen        *time.Time                    `json:"last_seen,omitempty"`
+	ClaudeMDFiles []state.ClaudeMDFile        `json:"claude_md_files"`
+	Tools         []string                    `json:"tools"`
+	MCPTools      []string                    `json:"mcp_tools"`
+	Thinking      statsThinking               `json:"thinking"`
+	BetaFeatures  string                      `json:"beta_features"`
+	Subagent      *state.SubagentInfoSnapshot `json:"subagent,omitempty"`
+	UserID        string                      `json:"user_id"`
+	LastSeen      *time.Time                  `json:"last_seen,omitempty"`
 }
 
 type statsThinking struct {

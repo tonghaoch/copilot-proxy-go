@@ -29,7 +29,7 @@ func TestResponsesCapableModelIDs(t *testing.T) {
 }
 
 func TestBuildCodexCommand(t *testing.T) {
-	cmd := buildCodexCommand(shell.Bash, "gpt-5.3-codex", "http://127.0.0.1:4141/v1")
+	cmd := buildCodexCommand(shell.Bash, "gpt-5.3-codex", "http://127.0.0.1:4141/v1", 400000)
 
 	checks := []string{
 		"codex",
@@ -39,10 +39,17 @@ func TestBuildCodexCommand(t *testing.T) {
 		"model_providers.copilot-proxy.base_url=\"http://127.0.0.1:4141/v1\"",
 		"model_providers.copilot-proxy.env_key=\"CODEX_API_KEY\"",
 		"model_providers.copilot-proxy.wire_api=\"responses\"",
+		"model_context_window=400000",
 	}
 	for _, check := range checks {
 		if !strings.Contains(cmd, check) {
 			t.Fatalf("expected command to contain %q, got %q", check, cmd)
 		}
+	}
+
+	// A zero/unknown window omits the override entirely.
+	noWin := buildCodexCommand(shell.Bash, "gpt-5.3-codex", "http://127.0.0.1:4141/v1", 0)
+	if strings.Contains(noWin, "model_context_window") {
+		t.Fatalf("expected no model_context_window override for zero window, got %q", noWin)
 	}
 }

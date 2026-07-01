@@ -30,9 +30,8 @@ func CountTokens(w http.ResponseWriter, r *http.Request) {
 
 	anthropicBeta := r.Header.Get("Anthropic-Beta")
 
-	// Translate Claude Code-style names → Copilot IDs and route 1M variants
-	// based on the context-1m-2025-08-07 beta header.
-	req.Model = ResolveCopilotModel(req.Model, anthropicBeta)
+	// Translate Claude Code-style names → Copilot IDs.
+	req.Model = ResolveCopilotModel(req.Model)
 
 	model := state.Global.FindModel(req.Model)
 

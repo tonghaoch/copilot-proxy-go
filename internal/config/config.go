@@ -30,7 +30,7 @@ var (
 
 // defaultExtraPrompts are auto-merged into user config on startup.
 var defaultExtraPrompts = map[string]string{
-	"gpt-5-mini": `When exploring a codebase or searching for information, batch your tool calls for efficiency. Use multi_tool_use.parallel to run multiple tool calls simultaneously when they are independent of each other.`,
+	"gpt-5-mini":        `When exploring a codebase or searching for information, batch your tool calls for efficiency. Use multi_tool_use.parallel to run multiple tool calls simultaneously when they are independent of each other.`,
 	"gpt-5.1-codex-max": `When exploring a codebase or searching for information, batch your tool calls for efficiency. Use multi_tool_use.parallel to run multiple tool calls simultaneously when they are independent of each other.`,
 	"gpt-5.3-codex": `You have two channels for communication:
 1. "commentary" channel: Use this for thinking out loud, explaining your approach, and providing updates to the user. These messages are shown to the user in real-time.
