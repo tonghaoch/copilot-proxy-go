@@ -32,7 +32,7 @@ func applySmallModelIfNeeded(req *AnthropicRequest, betaHeader string) bool {
 	// Tolerate dash-format Claude IDs in config (e.g. claude-haiku-4-5) by
 	// running the override through the same resolver as request entries —
 	// otherwise the override would set a model name FindModel can't match.
-	smallModel := ResolveCopilotModel(cfg.SmallModel, "")
+	smallModel := ResolveCopilotModel(cfg.SmallModel)
 
 	if cfg.CompactUseSmallModel && isCompactRequest(req) {
 		req.Model = smallModel

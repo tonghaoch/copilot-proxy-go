@@ -6,20 +6,20 @@ import "encoding/json"
 
 // AnthropicRequest is the incoming request to POST /v1/messages.
 type AnthropicRequest struct {
-	Model         string           `json:"model"`
-	Messages      []AnthropicMsg   `json:"messages"`
-	MaxTokens     int              `json:"max_tokens"`
-	System        json.RawMessage  `json:"system,omitempty"`
-	Metadata      *AnthropicMeta   `json:"metadata,omitempty"`
-	StopSequences []string         `json:"stop_sequences,omitempty"`
-	Stream        bool             `json:"stream"`
-	Temperature   *float64         `json:"temperature,omitempty"`
-	TopP          *float64         `json:"top_p,omitempty"`
-	TopK          *int             `json:"top_k,omitempty"`
-	Tools         []AnthropicTool  `json:"tools,omitempty"`
-	ToolChoice    json.RawMessage  `json:"tool_choice,omitempty"`
-	Thinking      *ThinkingConfig  `json:"thinking,omitempty"`
-	OutputConfig  *OutputConfig    `json:"output_config,omitempty"`
+	Model         string          `json:"model"`
+	Messages      []AnthropicMsg  `json:"messages"`
+	MaxTokens     int             `json:"max_tokens"`
+	System        json.RawMessage `json:"system,omitempty"`
+	Metadata      *AnthropicMeta  `json:"metadata,omitempty"`
+	StopSequences []string        `json:"stop_sequences,omitempty"`
+	Stream        bool            `json:"stream"`
+	Temperature   *float64        `json:"temperature,omitempty"`
+	TopP          *float64        `json:"top_p,omitempty"`
+	TopK          *int            `json:"top_k,omitempty"`
+	Tools         []AnthropicTool `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
+	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
+	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`
 }
 
 type AnthropicMeta struct {
@@ -103,7 +103,7 @@ type AnthropicUsage struct {
 // --- SSE Stream Event Types ---
 
 type MessageStartEvent struct {
-	Type    string           `json:"type"`
+	Type    string            `json:"type"`
 	Message AnthropicResponse `json:"message"`
 }
 
@@ -152,8 +152,8 @@ type MessageStopEvent struct {
 }
 
 type StreamErrorEvent struct {
-	Type  string         `json:"type"`
-	Error StreamErrBody  `json:"error"`
+	Type  string        `json:"type"`
+	Error StreamErrBody `json:"error"`
 }
 
 type StreamErrBody struct {
@@ -185,7 +185,7 @@ func ParseMessageContent(raw json.RawMessage) []ContentBlock {
 // ParseSystemPrompt extracts the system prompt text from the System field,
 // which can be a string or an array of {type, text} blocks.
 func ParseSystemPrompt(raw json.RawMessage) string {
-	if raw == nil || len(raw) == 0 {
+	if len(raw) == 0 {
 		return ""
 	}
 	// Try as string
@@ -212,5 +212,3 @@ func ParseSystemPrompt(raw json.RawMessage) string {
 	}
 	return ""
 }
-
-

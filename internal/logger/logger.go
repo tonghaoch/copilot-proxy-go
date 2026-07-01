@@ -14,21 +14,21 @@ import (
 )
 
 const (
-	maxBufferLines = 100
-	flushInterval  = 1 * time.Second
-	maxLogAge      = 7 * 24 * time.Hour
+	maxBufferLines  = 100
+	flushInterval   = 1 * time.Second
+	maxLogAge       = 7 * 24 * time.Hour
 	cleanupInterval = 24 * time.Hour
 )
 
 // HandlerLogger provides per-handler file-based logging.
 type HandlerLogger struct {
-	name    string
-	mu      sync.Mutex
-	buffer  []string
-	file    *os.File
-	date    string
-	ticker  *time.Ticker
-	done    chan struct{}
+	name   string
+	mu     sync.Mutex
+	buffer []string
+	file   *os.File
+	date   string
+	ticker *time.Ticker
+	done   chan struct{}
 }
 
 var (

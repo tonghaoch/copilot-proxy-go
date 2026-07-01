@@ -16,7 +16,7 @@ type SSEEvent struct {
 // from OpenAI Chat Completion chunks to Anthropic SSE events.
 type AnthropicStreamState struct {
 	blockIndex    int
-	openBlockType string // "text", "tool_use", "thinking", ""
+	openBlockType string      // "text", "tool_use", "thinking", ""
 	toolCallMap   map[int]int // OpenAI tool call index -> Anthropic block index
 	hasStarted    bool
 	model         string
@@ -351,16 +351,6 @@ func isInitiatorAgent(messages []AnthropicMsg) bool {
 		}
 	}
 	return true
-}
-
-// detectVisionInBlocks checks if a string contains image references.
-func detectVisionInBlocks(blocks []ContentBlock) bool {
-	for _, b := range blocks {
-		if b.Type == "image" {
-			return true
-		}
-	}
-	return false
 }
 
 // isResponsesSupported checks if a model supports the Responses API.

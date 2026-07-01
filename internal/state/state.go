@@ -44,7 +44,8 @@ type Model struct {
 	Object             string            `json:"object"`
 	Type               string            `json:"type"`
 	Created            int               `json:"created"`
-	OwnedBy           string            `json:"owned_by"`
+	OwnedBy            string            `json:"owned_by"`
+	Vendor             string            `json:"vendor"`
 	ModelPickerEnabled bool              `json:"model_picker_enabled"`
 	Preview            bool              `json:"preview"`
 	Capabilities       ModelCapabilities `json:"capabilities"`
@@ -60,13 +61,13 @@ type ModelsResponse struct {
 type State struct {
 	mu sync.RWMutex
 
-	githubToken  string
-	copilotToken string
-	accountType  string
-	models       []Model
+	githubToken   string
+	copilotToken  string
+	accountType   string
+	models        []Model
 	vsCodeVersion string
-	verbose      bool
-	showToken    bool
+	verbose       bool
+	showToken     bool
 }
 
 // Global is the singleton state instance.

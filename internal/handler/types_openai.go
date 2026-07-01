@@ -3,24 +3,24 @@ package handler
 // --- Chat Completions Request (what we send to Copilot) ---
 
 type ChatCompletionRequest struct {
-	Model       string         `json:"model"`
-	Messages    []OpenAIMsg    `json:"messages"`
-	MaxTokens   *int           `json:"max_tokens,omitempty"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	TopP        *float64       `json:"top_p,omitempty"`
-	Stream      bool           `json:"stream"`
-	Tools       []OpenAITool   `json:"tools,omitempty"`
-	ToolChoice  any            `json:"tool_choice,omitempty"`
-	Stop        any            `json:"stop,omitempty"`
+	Model       string       `json:"model"`
+	Messages    []OpenAIMsg  `json:"messages"`
+	MaxTokens   *int         `json:"max_tokens,omitempty"`
+	Temperature *float64     `json:"temperature,omitempty"`
+	TopP        *float64     `json:"top_p,omitempty"`
+	Stream      bool         `json:"stream"`
+	Tools       []OpenAITool `json:"tools,omitempty"`
+	ToolChoice  any          `json:"tool_choice,omitempty"`
+	Stop        any          `json:"stop,omitempty"`
 }
 
 type OpenAIMsg struct {
-	Role            string          `json:"role"`
-	Content         any             `json:"content"`                    // string or []OpenAIContentPart
+	Role            string           `json:"role"`
+	Content         any              `json:"content"` // string or []OpenAIContentPart
 	ToolCalls       []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID      string          `json:"tool_call_id,omitempty"`
-	ReasoningText   *string         `json:"reasoning_text,omitempty"`
-	ReasoningOpaque *string         `json:"reasoning_opaque,omitempty"`
+	ToolCallID      string           `json:"tool_call_id,omitempty"`
+	ReasoningText   *string          `json:"reasoning_text,omitempty"`
+	ReasoningOpaque *string          `json:"reasoning_opaque,omitempty"`
 }
 
 type OpenAIContentPart struct {
@@ -67,9 +67,9 @@ type ChatCompletionResponse struct {
 }
 
 type ChatCompletionChoice struct {
-	Index        int              `json:"index"`
-	Message      ChatCompletionM  `json:"message"`
-	FinishReason string           `json:"finish_reason"`
+	Index        int             `json:"index"`
+	Message      ChatCompletionM `json:"message"`
+	FinishReason string          `json:"finish_reason"`
 }
 
 type ChatCompletionM struct {

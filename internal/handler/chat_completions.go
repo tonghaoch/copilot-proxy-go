@@ -26,17 +26,15 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	// Read the raw body up front so we can translate Claude Code-style model
-	// names (e.g. "claude-opus-4-7") to Copilot IDs (e.g. "claude-opus-4.7"
-	// or the -1m variant when the context-1m-2025-08-07 beta is set) before
-	// service-layer patching kicks in (max_tokens auto-fill needs the
+	// names (e.g. "claude-opus-4-7") to Copilot IDs (e.g. "claude-opus-4.7")
+	// before service-layer patching kicks in (max_tokens auto-fill needs the
 	// resolved name to look the model up).
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
-	betaHeader := r.Header.Get("Anthropic-Beta")
-	raw, _ = RewriteModelInBody(raw, betaHeader)
+	raw, _ = RewriteModelInBody(raw)
 
 	body, isStream, isAgent, err := service.ParseAndPatchChatCompletion(bytes.NewReader(raw))
 	if err != nil {

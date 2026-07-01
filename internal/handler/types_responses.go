@@ -29,18 +29,18 @@ type ResponsesReasoning struct {
 
 // ResponsesInput is a polymorphic input item.
 type ResponsesInput struct {
-	Type             string          `json:"type"`
-	Role             string          `json:"role,omitempty"`
-	Content          any             `json:"content,omitempty"`
-	CallID           string          `json:"call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Arguments        string          `json:"arguments,omitempty"`
-	Output           any             `json:"output,omitempty"`
-	Status           string          `json:"status,omitempty"`
-	ID               string          `json:"id,omitempty"`
-	EncryptedContent string          `json:"encrypted_content,omitempty"`
-	Summary          []SummaryItem   `json:"summary,omitempty"`
-	Phase            string          `json:"phase,omitempty"`
+	Type             string        `json:"type"`
+	Role             string        `json:"role,omitempty"`
+	Content          any           `json:"content,omitempty"`
+	CallID           string        `json:"call_id,omitempty"`
+	Name             string        `json:"name,omitempty"`
+	Arguments        string        `json:"arguments,omitempty"`
+	Output           any           `json:"output,omitempty"`
+	Status           string        `json:"status,omitempty"`
+	ID               string        `json:"id,omitempty"`
+	EncryptedContent string        `json:"encrypted_content,omitempty"`
+	Summary          []SummaryItem `json:"summary,omitempty"`
+	Phase            string        `json:"phase,omitempty"`
 }
 
 type SummaryItem struct {
@@ -80,9 +80,9 @@ type OutputContent struct {
 }
 
 type ResponsesUsage struct {
-	InputTokens        int                     `json:"input_tokens"`
-	OutputTokens       int                     `json:"output_tokens"`
-	InputTokensDetails *InputTokensDetails     `json:"input_tokens_details,omitempty"`
+	InputTokens        int                 `json:"input_tokens"`
+	OutputTokens       int                 `json:"output_tokens"`
+	InputTokensDetails *InputTokensDetails `json:"input_tokens_details,omitempty"`
 }
 
 type InputTokensDetails struct {

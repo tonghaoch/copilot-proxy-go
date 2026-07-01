@@ -47,11 +47,10 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	// name, e.g. "claude-opus-4-7", before we translate to the Copilot ID).
 	originalModel := req.Model
 
-	// Translate Claude Code-style names → Copilot IDs and route 1M variants
-	// when the context-1m-2025-08-07 beta header is present. The raw body is
+	// Translate Claude Code-style names → Copilot IDs. The raw body is
 	// rewritten in lockstep so handleWithMessagesAPI (which re-parses body
 	// into a map to preserve unknown fields) sees the same resolved model.
-	if newBody, resolved := RewriteModelInBody(body, betaHeader); resolved != "" {
+	if newBody, resolved := RewriteModelInBody(body); resolved != "" {
 		body = newBody
 		req.Model = resolved
 	}

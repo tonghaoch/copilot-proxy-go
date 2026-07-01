@@ -34,12 +34,10 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Translate Claude Code-style names → Copilot IDs and route 1M variants
-	// based on the context-1m-2025-08-07 beta header. The payload map is the
+	// Translate Claude Code-style names → Copilot IDs. The payload map is the
 	// authoritative copy that gets re-marshalled below, so update it.
-	betaHeader := r.Header.Get("Anthropic-Beta")
 	modelID, _ := payload["model"].(string)
-	if resolved := ResolveCopilotModel(modelID, betaHeader); resolved != modelID {
+	if resolved := ResolveCopilotModel(modelID); resolved != modelID {
 		modelID = resolved
 		payload["model"] = resolved
 	}

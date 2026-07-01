@@ -33,64 +33,62 @@ var claudeDotRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:\.
 // Capture groups: family, major, minor (optional), suffix (optional).
 var claudeDashRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:-(\d+))?(?:-(.+))?$`)
 
-// ToClaudeCodeName converts a Copilot model ID into the Claude Code-friendly
-// dashed form. 1M variants are collapsed to the [1m] suffix that Claude Code
-// recognizes (Claude Code strips [1m] before sending and adds the
-// "context-1m-2025-08-07" beta header). Non-Claude IDs pass through.
+// standardClaudeContextTokens is the default Claude context window (200K). A
+// model whose reported context window exceeds this is an "extended context"
+// (1M) model, which Claude Code only budgets correctly when the model name
+// carries the [1m] suffix (see ToClaudeCodeName).
+const standardClaudeContextTokens = 200000
+
+// is1MContextModel reports whether a model advertises an extended (>200K)
+// context window in its capabilities.
+func is1MContextModel(m state.Model) bool {
+	return m.Capabilities.Limits.MaxContextWindowTokens > standardClaudeContextTokens
+}
+
+// ToClaudeCodeName converts a Copilot model into the Claude Code-friendly
+// dashed form. Non-Claude IDs pass through unchanged.
 //
-//	claude-opus-4.7              → claude-opus-4-7
-//	claude-opus-4.7-1m-internal  → claude-opus-4-7[1m]
-//	claude-opus-4.6-1m           → claude-opus-4-6[1m]
-//	claude-sonnet-4              → claude-sonnet-4
-//	claude-opus-4.7-high         → claude-opus-4-7-high
-func ToClaudeCodeName(copilotID string) string {
-	m := claudeDotRe.FindStringSubmatch(copilotID)
-	if m == nil {
-		return copilotID
+// Extended-context Claude models get a "[1m]" suffix. Claude Code treats our
+// proxy as an LLM gateway and can't verify 1M support, so it budgets a 200K
+// window unless the model name carries [1m]; it strips the suffix locally
+// before sending, so the proxy still receives a clean ID.
+//
+//	claude-opus-4.8   (1M limits) → claude-opus-4-8[1m]
+//	claude-sonnet-4.5 (200K limits) → claude-sonnet-4-5
+//	claude-opus-4.7-high          → claude-opus-4-7-high
+func ToClaudeCodeName(m state.Model) string {
+	match := claudeDotRe.FindStringSubmatch(m.ID)
+	if match == nil {
+		return m.ID
 	}
-	family, major, minor, suffix := m[1], m[2], m[3], m[4]
+	family, major, minor, suffix := match[1], match[2], match[3], match[4]
 
 	base := family + "-" + major
 	if minor != "" {
 		base += "-" + minor
 	}
-	if suffix == "1m" || strings.HasPrefix(suffix, "1m-") {
-		return base + "[1m]"
-	}
 	if suffix != "" {
-		return base + "-" + suffix
+		base += "-" + suffix
+	}
+	if is1MContextModel(m) {
+		base += "[1m]"
 	}
 	return base
 }
 
 // ResolveCopilotModel converts an inbound model ID (whatever Claude Code or
-// any other client sends) into the actual Copilot model ID to call. Two
-// signals trigger 1M-variant routing:
-//   - a literal "[1m]" suffix on the model (defensive: Claude Code normally
-//     strips this before sending)
-//   - the Anthropic-Beta header containing "context-1m-2025-08-07"
+// any other client sends) into the actual Copilot model ID to call, by
+// translating Claude Code's dashed form back to Copilot's dotted form.
 //
-// On either signal we look for a cached model whose ID starts with
-// "<canonical>-1m" and route there. Otherwise we just translate the dashed
-// version back to dotted form.
-func ResolveCopilotModel(model, betaHeader string) string {
-	want1M := false
-	if strings.HasSuffix(model, "[1m]") {
-		want1M = true
-		model = strings.TrimSuffix(model, "[1m]")
-	}
-	if strings.Contains(betaHeader, "context-1m-2025-08-07") {
-		want1M = true
-	}
-
-	canonical := dashVersionToDot(model)
-
-	if want1M {
-		if oneM := find1MVariant(canonical); oneM != "" {
-			return oneM
-		}
-	}
-	return canonical
+// Copilot no longer ships separate 1M-context model variants — context size is
+// now a per-model capability (capabilities.limits.max_context_window_tokens),
+// so there is nothing to route to. A trailing "[1m]" is stripped defensively
+// (Claude Code normally strips it itself; forwarding it to Copilot causes a
+// 400). The "context-1m-2025-08-07" beta header is likewise stripped from
+// forwarded requests by filterBetaHeader, but neither affects model selection.
+func ResolveCopilotModel(model string) string {
+	model = strings.TrimSuffix(model, "[1m]")
+	return dashVersionToDot(model)
 }
 
 // dashVersionToDot turns "claude-opus-4-7" into "claude-opus-4.7". Idempotent
@@ -113,24 +111,11 @@ func dashVersionToDot(model string) string {
 	return out
 }
 
-// find1MVariant returns the first cached model whose ID begins with
-// "<canonical>-1m" — covers both "claude-opus-4.6-1m" and
-// "claude-opus-4.7-1m-internal". Returns "" when no variant is registered.
-func find1MVariant(canonical string) string {
-	prefix := canonical + "-1m"
-	for _, m := range state.Global.GetModels() {
-		if strings.HasPrefix(m.ID, prefix) {
-			return m.ID
-		}
-	}
-	return ""
-}
-
 // RewriteModelInBody resolves the "model" field of a JSON object body via
 // ResolveCopilotModel and rewrites the body in place. Returns the (possibly
 // new) body and the resolved model name. If parsing fails or the body has no
 // "model" field, returns (body, "") so callers can detect the no-op.
-func RewriteModelInBody(body []byte, betaHeader string) ([]byte, string) {
+func RewriteModelInBody(body []byte) ([]byte, string) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return body, ""
@@ -139,7 +124,7 @@ func RewriteModelInBody(body []byte, betaHeader string) ([]byte, string) {
 	if orig == "" {
 		return body, ""
 	}
-	resolved := ResolveCopilotModel(orig, betaHeader)
+	resolved := ResolveCopilotModel(orig)
 	if resolved == orig {
 		return body, orig
 	}
