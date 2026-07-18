@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,5 +43,42 @@ func TestProxyRequestPropagatesCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("upstream request did not stop after cancellation")
+	}
+}
+
+func TestClientRefreshesAndReplaysRequestOnce(t *testing.T) {
+	var attempts atomic.Int32
+	var refreshes atomic.Int32
+	client := NewClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempt := attempts.Add(1)
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != `{"model":"test"}` {
+			t.Fatalf("request body was not replayed: %s", body)
+		}
+		status := http.StatusOK
+		if attempt == 1 {
+			status = http.StatusUnauthorized
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}, func() error {
+		refreshes.Add(1)
+		return nil
+	})
+
+	resp, err := client.ProxyResponses(context.Background(), []byte(`{"model":"test"}`), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if attempts.Load() != 2 || refreshes.Load() != 1 {
+		t.Fatalf("expected two attempts and one refresh, got attempts=%d refreshes=%d", attempts.Load(), refreshes.Load())
 	}
 }

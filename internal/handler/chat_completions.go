@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"encoding/json"
 
@@ -22,15 +21,18 @@ import (
 // It proxies requests to the Copilot API, supporting both streaming and
 // non-streaming modes.
 func ChatCompletions(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	tracked := trackRequest(w, r, "chat_completions")
+	defer tracked.Finish()
+	w = tracked.Writer
+	rec := tracked.Record
+	rec.Backend = "chat_completions"
+	rec.RequestType = "normal"
 
 	// Read the raw body up front so we can translate Claude Code-style model
 	// names (e.g. "claude-opus-4-7") to Copilot IDs (e.g. "claude-opus-4.7")
 	// before service-layer patching kicks in (max_tokens auto-fill needs the
 	// resolved name to look the model up).
-	raw, err := io.ReadAll(r.Body)
+	raw, err := readRequestBody(w, r)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -60,6 +62,10 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("chat completion request", "stream", isStream, "initiator", initiatorStr(isAgent))
 	}
+	rec.Model = modelName
+	rec.RoutedModel = modelName
+	rec.Initiator = initiatorStr(isAgent)
+	rec.Streaming = isStream
 
 	resp, err := service.ProxyChatCompletion(r.Context(), body, isAgent)
 	if err != nil {
@@ -68,39 +74,20 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	rec := state.RequestRecord{
-		Timestamp:   start,
-		Endpoint:    "chat_completions",
-		Model:       modelName,
-		RoutedModel: modelName,
-		Backend:     "chat_completions",
-		RequestType: "normal",
-		Initiator:   initiatorStr(isAgent),
-		Streaming:   isStream,
-		StatusCode:  resp.StatusCode,
-	}
 	if isStream {
-		streamSSE(w, resp.Body, &rec)
+		streamSSE(w, resp.Body, rec)
 	} else {
-		forwardJSON(w, resp, &rec)
+		forwardJSON(w, resp, rec)
 	}
-
-	rec.LatencyMs = time.Since(start).Milliseconds()
-	state.Metrics.RecordRequest(rec)
 }
 
 // streamSSE proxies an SSE stream from the Copilot API to the client.
 func streamSSE(w http.ResponseWriter, body io.Reader, rec *state.RequestRecord) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	flusher, err := beginSSE(w)
+	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 
 	scanner := bufio.NewScanner(body)
 	// Increase buffer size for large SSE events

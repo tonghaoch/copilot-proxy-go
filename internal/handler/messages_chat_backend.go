@@ -57,15 +57,11 @@ func nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Response, rec *s
 }
 
 func streamChatToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	flusher, err := beginSSE(w)
+	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 	streamState := NewAnthropicStreamState(model)
 	if err := readSSE(resp.Body, func(eventType, data string) error {
 		var chunk ChatCompletionChunk

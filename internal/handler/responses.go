@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
@@ -17,17 +16,16 @@ import (
 
 // Responses handles POST /responses and /v1/responses — OpenAI Responses API passthrough.
 func Responses(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
+	tracked := trackRequest(w, r, "responses")
+	defer tracked.Finish()
+	w = tracked.Writer
+	rec := tracked.Record
+	rec.Backend = "responses"
+	rec.RequestType = "normal"
+	var payload map[string]any
+	body, err := decodeRequestBody(w, r, &payload)
 	if err != nil {
 		api.ForwardError(w, err)
-		return
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		api.ForwardError(w, api.InvalidRequest("invalid request body", err))
 		return
 	}
 
@@ -36,6 +34,8 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		modelID = resolved
 		payload["model"] = resolved
 	}
+	rec.Model = modelID
+	rec.RoutedModel = modelID
 
 	model := state.Global.FindModel(modelID)
 	if model == nil || !isResponsesSupported(model) {
@@ -63,6 +63,9 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	isStream, _ := payload["stream"].(bool)
 	vision := detectVisionInResponses(payload)
 	isAgent := detectAgentInResponses(payload)
+	rec.Initiator = initiatorStr(isAgent)
+	rec.HasVision = vision
+	rec.Streaming = isStream
 	logger.For("responses").Log("model=%s stream=%v initiator=%s vision=%v", modelID, isStream, initiatorStr(isAgent), vision)
 	slog.Info("responses passthrough", "model", modelID, "stream", isStream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
@@ -79,13 +82,8 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	rec := state.RequestRecord{
-		Timestamp: start, Endpoint: "responses", Model: modelID, RoutedModel: modelID,
-		Backend: "responses", RequestType: "normal", Initiator: initiatorStr(isAgent),
-		HasVision: vision, Streaming: isStream, StatusCode: resp.StatusCode,
-	}
 	if isStream {
-		streamResponsesPassthrough(w, resp, &rec)
+		streamResponsesPassthrough(w, resp, rec)
 	} else {
 		var captured bytes.Buffer
 		w.Header().Set("Content-Type", "application/json")
@@ -93,9 +91,7 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, io.TeeReader(resp.Body, &captured))
 		var result ResponsesResult
 		if json.Unmarshal(captured.Bytes(), &result) == nil {
-			captureResponsesUsage(&rec, result.Usage)
+			captureResponsesUsage(rec, result.Usage)
 		}
 	}
-	rec.LatencyMs = time.Since(start).Milliseconds()
-	state.Metrics.RecordRequest(rec)
 }

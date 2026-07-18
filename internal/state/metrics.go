@@ -8,7 +8,7 @@ import (
 // RequestRecord holds per-request metrics.
 type RequestRecord struct {
 	Timestamp      time.Time `json:"timestamp"`
-	Endpoint       string    `json:"endpoint"`     // messages, chat_completions, responses
+	Endpoint       string    `json:"endpoint"`     // messages, chat_completions, responses, embeddings
 	Model          string    `json:"model"`        // original model requested
 	RoutedModel    string    `json:"routed_model"` // after small-model routing
 	Backend        string    `json:"backend"`      // messages, responses, chat_completions
@@ -118,7 +118,9 @@ func (m *metricsStore) RecordRequest(rec RequestRecord) {
 	if model == "" {
 		model = rec.Model
 	}
-	m.agg.ModelCounts[model]++
+	if model != "" {
+		m.agg.ModelCounts[model]++
+	}
 
 	if rec.Backend != "" {
 		m.agg.BackendCounts[rec.Backend]++

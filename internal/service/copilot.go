@@ -14,6 +14,32 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
+// HTTPDoer is the small portion of http.Client needed by the Copilot client.
+// Keeping this boundary narrow makes upstream behavior testable without a
+// process-wide HTTP client replacement.
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// Client owns the dependencies required to call Copilot APIs.
+type Client struct {
+	httpClient   func() HTTPDoer
+	refreshToken func() error
+}
+
+// NewClient creates an independently testable Copilot client.
+func NewClient(httpClient HTTPDoer, refreshToken func() error) *Client {
+	return &Client{
+		httpClient:   func() HTTPDoer { return httpClient },
+		refreshToken: refreshToken,
+	}
+}
+
+var defaultClient = &Client{
+	httpClient:   func() HTTPDoer { return api.HTTPClient() },
+	refreshToken: auth.RefreshCopilotTokenNow,
+}
+
 // isTokenExpired checks if the response indicates an expired/invalid token.
 func isTokenExpired(statusCode int) bool {
 	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
@@ -21,7 +47,12 @@ func isTokenExpired(statusCode int) bool {
 
 // FetchModels retrieves available models from the Copilot API.
 func FetchModels(ctx context.Context) ([]state.Model, error) {
-	resp, err := doCopilotRequest(ctx, http.MethodGet, "/models", nil, nil)
+	return defaultClient.FetchModels(ctx)
+}
+
+// FetchModels retrieves available models using this client's dependencies.
+func (c *Client) FetchModels(ctx context.Context) ([]state.Model, error) {
+	resp, err := c.doCopilotRequest(ctx, http.MethodGet, "/models", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetching models: %w", err)
 	}
@@ -47,22 +78,38 @@ func ProxyChatCompletion(ctx context.Context, body []byte, isAgent bool) (*http.
 // ProxyChatCompletionEx forwards a chat completion request with vision support.
 // Used by the Messages handler when routing through Chat Completions backend.
 func ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(isAgent, vision, ""))
+	return defaultClient.ProxyChatCompletionEx(ctx, body, isAgent, vision)
+}
+
+func (c *Client) ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(isAgent, vision, ""))
 }
 
 // ProxyMessages forwards a request to the Copilot native Messages API.
 func ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
-	return doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(isAgent, vision, betaHeader))
+	return defaultClient.ProxyMessages(ctx, body, betaHeader, vision, isAgent)
+}
+
+func (c *Client) ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(isAgent, vision, betaHeader))
 }
 
 // ProxyResponses forwards a request to the Copilot Responses API.
 func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
+	return defaultClient.ProxyResponses(ctx, body, isAgent, vision)
+}
+
+func (c *Client) ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
 }
 
 // ProxyEmbeddings forwards a request to the Copilot Embeddings API.
 func ProxyEmbeddings(ctx context.Context, body []byte) (*http.Response, error) {
-	return doCopilotRequest(ctx, http.MethodPost, "/embeddings", body, nil)
+	return defaultClient.ProxyEmbeddings(ctx, body)
+}
+
+func (c *Client) ProxyEmbeddings(ctx context.Context, body []byte) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/embeddings", body, nil)
 }
 
 func requestHeaders(isAgent, vision bool, betaHeader string) func(http.Header) {
@@ -77,7 +124,7 @@ func requestHeaders(isAgent, vision bool, betaHeader string) func(http.Header) {
 	}
 }
 
-func doCopilotRequest(ctx context.Context, method, path string, body []byte, configure func(http.Header)) (*http.Response, error) {
+func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body []byte, configure func(http.Header)) (*http.Response, error) {
 	buildRequest := func() (*http.Request, error) {
 		var reader io.Reader
 		if body != nil {
@@ -99,12 +146,12 @@ func doCopilotRequest(ctx context.Context, method, path string, body []byte, con
 		if err != nil {
 			return nil, fmt.Errorf("creating upstream request: %w", err)
 		}
-		resp, err := api.HTTPClient().Do(req)
+		resp, err := c.httpClient().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("sending upstream request: %w", err)
 		}
 		if !isTokenExpired(resp.StatusCode) || attempt == 1 {
-			if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 				err := api.NewHTTPError(resp)
 				resp.Body.Close()
 				return nil, err
@@ -114,7 +161,10 @@ func doCopilotRequest(ctx context.Context, method, path string, body []byte, con
 
 		resp.Body.Close()
 		slog.Warn("upstream request got auth error, refreshing token and retrying", "path", path, "status", resp.StatusCode)
-		if err := auth.RefreshCopilotTokenNow(); err != nil {
+		if c.refreshToken == nil {
+			return nil, fmt.Errorf("token refresh is not configured")
+		}
+		if err := c.refreshToken(); err != nil {
 			return nil, fmt.Errorf("token refresh failed: %w", err)
 		}
 	}

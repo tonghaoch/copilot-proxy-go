@@ -1,13 +1,8 @@
 package handler
 
 import (
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
-	"time"
-
-	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
@@ -17,18 +12,14 @@ import (
 // Messages handles POST /v1/messages — the Anthropic-compatible endpoint.
 // It routes to one of three backends based on the model's supported_endpoints.
 func Messages(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
-	r.Body = http.MaxBytesReader(ww, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
+	tracked := trackRequest(w, r, "messages")
+	defer tracked.Finish()
+	ww := tracked.Writer
+	rec := tracked.Record
+	var req AnthropicRequest
+	body, err := decodeRequestBody(ww, r, &req)
 	if err != nil {
 		api.ForwardError(ww, err)
-		return
-	}
-
-	var req AnthropicRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		api.ForwardError(ww, api.InvalidRequest("invalid request body", err))
 		return
 	}
 	betaHeader := r.Header.Get("Anthropic-Beta")
@@ -61,11 +52,13 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 		forceAgent = true
 	}
 	isAgent := forceAgent || isInitiatorAgent(req.Messages)
-	rec := &state.RequestRecord{
-		Timestamp: start, Endpoint: "messages", Model: originalModel, RoutedModel: req.Model,
-		RequestType: reqType, Initiator: initiatorStr(isAgent), HasVision: hasVision(req.Messages),
-		Streaming: req.Stream, ToolCount: len(req.Tools),
-	}
+	rec.Model = originalModel
+	rec.RoutedModel = req.Model
+	rec.RequestType = reqType
+	rec.Initiator = initiatorStr(isAgent)
+	rec.HasVision = hasVision(req.Messages)
+	rec.Streaming = req.Stream
+	rec.ToolCount = len(req.Tools)
 	if req.Thinking != nil {
 		rec.ThinkingBudget = req.Thinking.BudgetTokens
 	}
@@ -84,10 +77,4 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 		handleWithChatCompletions(ww, r, &req, forceAgent, rec)
 	}
 
-	rec.LatencyMs = time.Since(start).Milliseconds()
-	rec.StatusCode = ww.Status()
-	if rec.StatusCode == 0 {
-		rec.StatusCode = http.StatusOK
-	}
-	state.Metrics.RecordRequest(*rec)
 }

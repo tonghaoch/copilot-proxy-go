@@ -57,15 +57,11 @@ func nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, r
 }
 
 func streamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	flusher, err := beginSSE(w)
+	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 	streamState := NewResponsesStreamState(model)
 	if err := readSSE(resp.Body, func(eventType, data string) error {
 		events, err := streamState.TranslateEvent(eventType, data)

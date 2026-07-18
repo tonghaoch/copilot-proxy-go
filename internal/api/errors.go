@@ -16,6 +16,7 @@ type HTTPError struct {
 	StatusCode int
 	Body       string
 	Cause      error
+	Header     http.Header
 }
 
 func (e *HTTPError) Error() string {
@@ -43,8 +44,34 @@ func NewHTTPError(resp *http.Response) *HTTPError {
 	body, _ := io.ReadAll(resp.Body)
 	return &HTTPError{
 		Message:    resp.Status,
+		Type:       ErrorTypeForStatus(resp.StatusCode),
 		StatusCode: resp.StatusCode,
 		Body:       string(body),
+		Header:     resp.Header.Clone(),
+	}
+}
+
+// ErrorTypeForStatus maps HTTP status codes to the error categories understood
+// by OpenAI- and Anthropic-compatible clients.
+func ErrorTypeForStatus(statusCode int) string {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusConflict:
+		return "conflict_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	default:
+		if statusCode >= http.StatusInternalServerError {
+			return "api_error"
+		}
+		return "invalid_request_error"
 	}
 }
 
@@ -70,8 +97,8 @@ func ForwardError(w http.ResponseWriter, err error) {
 		message = httpErr.Message
 		if httpErr.Type != "" {
 			errType = httpErr.Type
-		} else if statusCode >= 400 && statusCode < 500 {
-			errType = "invalid_request_error"
+		} else {
+			errType = ErrorTypeForStatus(statusCode)
 		}
 		// Try to parse the body as JSON error
 		var parsed struct {
@@ -96,6 +123,10 @@ func ForwardError(w http.ResponseWriter, err error) {
 	slog.Error("request error", "status", statusCode, "message", message)
 
 	w.Header().Set("Content-Type", "application/json")
+	if httpErr != nil {
+		copyResponseHeader(w.Header(), httpErr.Header, "Retry-After")
+		copyResponseHeader(w.Header(), httpErr.Header, "X-Request-ID")
+	}
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(ErrorResponse{
 		Error: ErrorDetail{
@@ -103,4 +134,10 @@ func ForwardError(w http.ResponseWriter, err error) {
 			Type:    errType,
 		},
 	})
+}
+
+func copyResponseHeader(dst, src http.Header, key string) {
+	if value := src.Get(key); value != "" {
+		dst.Set(key, value)
+	}
 }

@@ -84,15 +84,11 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 
 	if req.Stream {
 		// Stream passthrough — forward SSE events, sniff usage data
-		flusher, ok := w.(http.Flusher)
-		if !ok {
+		flusher, err := beginSSE(w)
+		if err != nil {
 			http.Error(w, "streaming not supported", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
 
 		if err := readSSE(resp.Body, func(eventType, data string) error {
 			// Sniff token counts from native Anthropic events

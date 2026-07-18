@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -13,19 +12,22 @@ import (
 // Embeddings handles POST /embeddings and /v1/embeddings.
 // It normalizes OpenAI-compatible input before forwarding to Copilot.
 func Embeddings(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	body, err := io.ReadAll(r.Body)
+	tracked := trackRequest(w, r, "embeddings")
+	defer tracked.Finish()
+	w = tracked.Writer
+	rec := tracked.Record
+	rec.Backend = "embeddings"
+	rec.RequestType = "normal"
+
+	var payload map[string]any
+	body, err := decodeRequestBody(w, r, &payload)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		api.ForwardError(w, api.InvalidRequest("invalid request body", err))
-		return
-	}
 	model, _ := payload["model"].(string)
+	rec.Model = model
+	rec.RoutedModel = model
 	switch input := payload["input"].(type) {
 	case string:
 		payload["input"] = []string{input}
@@ -50,16 +52,26 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	var result map[string]any
+	// Keep large embedding vectors as raw JSON. Decoding them into []any would
+	// allocate one interface and one float value for every dimension.
+	var result map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		api.ForwardError(w, err)
 		return
 	}
 	if _, ok := result["object"]; !ok {
-		result["object"] = "list"
+		result["object"] = json.RawMessage(`"list"`)
 	}
 	if _, ok := result["model"]; !ok {
-		result["model"] = model
+		result["model"], _ = json.Marshal(model)
+	}
+	if rawUsage := result["usage"]; len(rawUsage) > 0 {
+		var usage struct {
+			PromptTokens int `json:"prompt_tokens"`
+		}
+		if json.Unmarshal(rawUsage, &usage) == nil {
+			rec.InputTokens = int64(usage.PromptTokens)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
