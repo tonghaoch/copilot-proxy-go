@@ -10,6 +10,10 @@ var dashboardHTML []byte
 
 // Dashboard serves the embedded usage dashboard HTML page.
 func Dashboard(w http.ResponseWriter, r *http.Request) {
+	defaultHandler.Dashboard(w, r)
+}
+
+func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write(dashboardHTML)

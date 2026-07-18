@@ -7,7 +7,7 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func buildSessionSnapshot(req *AnthropicRequest, betaHeader string, subagent *SubagentInfo) {
+func buildSessionSnapshot(req *AnthropicRequest, betaHeader string, subagent *SubagentInfo, metrics MetricsStore) {
 	snap := state.SessionSnapshot{
 		ClaudeMDFiles: extractClaudeMDFiles(ParseSystemPrompt(req.System)),
 		BetaFeatures:  betaHeader,
@@ -33,5 +33,5 @@ func buildSessionSnapshot(req *AnthropicRequest, betaHeader string, subagent *Su
 	if req.Metadata != nil {
 		snap.UserID = req.Metadata.UserID
 	}
-	state.Metrics.UpdateSession(snap)
+	metrics.UpdateSession(snap)
 }

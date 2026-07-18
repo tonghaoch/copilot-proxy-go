@@ -7,12 +7,11 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
-	ccReq, err := translateToOpenAI(req, config.GetExtraPrompt(normalizeModelName(req.Model)))
+func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
+	ccReq, err := h.anthropic.ToChat(req, config.GetExtraPrompt(normalizeModelName(req.Model)))
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -26,20 +25,20 @@ func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *Anth
 	vision := hasVision(req.Messages)
 	slog.Info("chat completions backend", "model", ccReq.Model, "stream", ccReq.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
-	resp, err := service.ProxyChatCompletionEx(r.Context(), body, isAgent, vision)
+	resp, err := h.copilot.ProxyChatCompletionEx(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 	if req.Stream {
-		streamChatToAnthropic(w, resp, ccReq.Model, rec)
+		h.streamChatToAnthropic(w, resp, ccReq.Model, rec)
 	} else {
-		nonStreamChatToAnthropic(w, resp, rec)
+		h.nonStreamChatToAnthropic(w, resp, rec)
 	}
 }
 
-func nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
+func (h *Handler) nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
 	var ccResp ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ccResp); err != nil {
 		api.ForwardError(w, err)
@@ -53,17 +52,17 @@ func nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Response, rec *s
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(translateToAnthropic(&ccResp))
+	json.NewEncoder(w).Encode(h.anthropic.FromChat(&ccResp))
 }
 
-func streamChatToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
+func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
 	flusher, err := beginSSE(w)
 	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 	streamState := NewAnthropicStreamState(model)
-	if err := readSSE(resp.Body, func(eventType, data string) error {
+	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
 		var chunk ChatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return err

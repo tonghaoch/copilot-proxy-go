@@ -11,7 +11,7 @@ import (
 
 // streamResponsesPassthrough forwards Responses SSE events, applying stream
 // ID synchronization to fix @ai-sdk/openai crashes.
-func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
+func (h *Handler) streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -23,7 +23,7 @@ func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response, rec 
 	w.WriteHeader(http.StatusOK)
 
 	sync := NewStreamIDSync()
-	if err := readSSE(resp.Body, func(eventType, data string) error {
+	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
 		captureResponsesStreamUsage(data, rec)
 		data = sync.Process(eventType, data)
 		if eventType != "" {

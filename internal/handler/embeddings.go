@@ -2,17 +2,21 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 )
 
 // Embeddings handles POST /embeddings and /v1/embeddings.
 // It normalizes OpenAI-compatible input before forwarding to Copilot.
 func Embeddings(w http.ResponseWriter, r *http.Request) {
-	tracked := trackRequest(w, r, "embeddings")
+	defaultHandler.Embeddings(w, r)
+}
+
+func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
+	tracked := trackRequest(w, r, "embeddings", h.metrics)
 	defer tracked.Finish()
 	w = tracked.Writer
 	rec := tracked.Record
@@ -45,7 +49,7 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("embeddings request")
 
-	resp, err := service.ProxyEmbeddings(r.Context(), body)
+	resp, err := h.copilot.ProxyEmbeddings(r.Context(), body)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -54,10 +58,22 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	// Keep large embedding vectors as raw JSON. Decoding them into []any would
 	// allocate one interface and one float value for every dimension.
-	var result map[string]json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	result, inputTokens, err := normalizeEmbeddingsResponse(resp.Body, model)
+	if err != nil {
 		api.ForwardError(w, err)
 		return
+	}
+	rec.InputTokens = inputTokens
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	json.NewEncoder(w).Encode(result)
+}
+
+func normalizeEmbeddingsResponse(body io.Reader, model string) (map[string]json.RawMessage, int64, error) {
+	var result map[string]json.RawMessage
+	if err := json.NewDecoder(body).Decode(&result); err != nil {
+		return nil, 0, err
 	}
 	if _, ok := result["object"]; !ok {
 		result["object"] = json.RawMessage(`"list"`)
@@ -70,11 +86,8 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 			PromptTokens int `json:"prompt_tokens"`
 		}
 		if json.Unmarshal(rawUsage, &usage) == nil {
-			rec.InputTokens = int64(usage.PromptTokens)
+			return result, int64(usage.PromptTokens), nil
 		}
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	json.NewEncoder(w).Encode(result)
+	return result, 0, nil
 }

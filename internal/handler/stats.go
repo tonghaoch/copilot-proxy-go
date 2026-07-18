@@ -57,7 +57,11 @@ type statsConfig struct {
 
 // Stats handles GET /api/stats — returns all dashboard metrics as JSON.
 func Stats(w http.ResponseWriter, r *http.Request) {
-	snap := state.Metrics.Snapshot()
+	defaultHandler.Stats(w, r)
+}
+
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	snap := h.metrics.Snapshot()
 	cfg := config.Get()
 	apiKeys := config.GetAPIKeys()
 
@@ -100,8 +104,8 @@ func Stats(w http.ResponseWriter, r *http.Request) {
 		Session:       session,
 		Recent:        recent,
 		Config: statsConfig{
-			AccountType:          state.Global.GetAccountType(),
-			VSCodeVersion:        state.Global.GetVSCodeVersion(),
+			AccountType:          h.state.GetAccountType(),
+			VSCodeVersion:        h.state.GetVSCodeVersion(),
 			SmallModel:           cfg.SmallModel,
 			CompactUseSmallModel: cfg.CompactUseSmallModel,
 			ReasoningEfforts:     cfg.ModelReasoningEfforts,

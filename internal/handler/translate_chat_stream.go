@@ -49,16 +49,7 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 	// Emit message_start on first chunk
 	if !s.hasStarted {
 		s.hasStarted = true
-		usage := AnthropicUsage{}
-		if chunk.Usage != nil {
-			usage.InputTokens = chunk.Usage.PromptTokens
-			if chunk.Usage.PromptTokensDetails != nil {
-				usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-				usage.InputTokens -= usage.CacheReadInputTokens
-			}
-			s.inputTokens = usage.InputTokens
-			s.cachedTokens = usage.CacheReadInputTokens
-		}
+		usage := s.captureUsage(chunk.Usage)
 		events = append(events, SSEEvent{
 			Event: "message_start",
 			Data: MessageStartEvent{
@@ -76,9 +67,7 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 
 	if len(chunk.Choices) == 0 {
 		// Usage-only chunk at the end
-		if chunk.Usage != nil {
-			s.outputTokens = chunk.Usage.CompletionTokens
-		}
+		s.captureUsage(chunk.Usage)
 		return events
 	}
 
@@ -242,9 +231,7 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 		stopReason := mapStopReason(*choice.FinishReason)
 
 		// Update usage from final chunk
-		if chunk.Usage != nil {
-			s.outputTokens = chunk.Usage.CompletionTokens
-		}
+		s.captureUsage(chunk.Usage)
 
 		events = append(events, SSEEvent{
 			Event: "message_delta",
@@ -265,6 +252,29 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 	}
 
 	return events
+}
+
+// captureUsage updates the metrics counters from any chunk carrying usage.
+// OpenAI commonly sends usage only in a final chunk with no choices, while
+// Anthropic needs non-cached input tokens in message_start. Keep the internal
+// input counter as the full prompt total so metrics remain consistent with the
+// non-streaming Chat, Responses, and native Messages paths.
+func (s *AnthropicStreamState) captureUsage(usage *ChatCompletionUsage) AnthropicUsage {
+	if usage == nil {
+		return AnthropicUsage{}
+	}
+	cached := 0
+	if usage.PromptTokensDetails != nil {
+		cached = usage.PromptTokensDetails.CachedTokens
+	}
+	s.inputTokens = usage.PromptTokens
+	s.outputTokens = usage.CompletionTokens
+	s.cachedTokens = cached
+	return AnthropicUsage{
+		InputTokens:          usage.PromptTokens - cached,
+		OutputTokens:         usage.CompletionTokens,
+		CacheReadInputTokens: cached,
+	}
 }
 
 func (s *AnthropicStreamState) closeCurrentBlock() []SSEEvent {

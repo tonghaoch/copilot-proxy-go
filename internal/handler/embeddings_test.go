@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -66,5 +67,18 @@ func TestEmbeddingsRejectsInvalidInput(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"type":"invalid_request_error"`) {
 		t.Fatalf("unexpected error response: %s", recorder.Body.String())
+	}
+}
+
+func BenchmarkNormalizeEmbeddingsResponse1536Dimensions(b *testing.B) {
+	vector := strings.TrimSuffix(strings.Repeat("0.123,", 1536), ",")
+	body := []byte(`{"data":[{"object":"embedding","index":0,"embedding":[` + vector +
+		`]}],"usage":{"prompt_tokens":2,"total_tokens":2}}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		if _, _, err := normalizeEmbeddingsResponse(bytes.NewReader(body), "text-embedding-3-small"); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

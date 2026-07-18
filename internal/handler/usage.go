@@ -6,11 +6,14 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
-	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // Usage handles GET /usage — returns Copilot quota/usage information.
 func Usage(w http.ResponseWriter, r *http.Request) {
+	defaultHandler.Usage(w, r)
+}
+
+func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/copilot_internal/user", nil)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -18,11 +21,11 @@ func Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Header = api.BuildGitHubHeaders(
-		state.Global.GetGithubToken(),
-		state.Global.GetVSCodeVersion(),
+		h.state.GetGithubToken(),
+		h.state.GetVSCodeVersion(),
 	)
 
-	resp, err := api.HTTPClient().Do(req)
+	resp, err := h.http.Do(req)
 	if err != nil {
 		api.ForwardError(w, err)
 		return

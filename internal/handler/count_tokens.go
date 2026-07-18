@@ -20,6 +20,10 @@ type CountTokensResponse struct {
 // the token count using a simple heuristic (chars/4 approximation)
 // since full tiktoken support requires a separate Go library.
 func CountTokens(w http.ResponseWriter, r *http.Request) {
+	defaultHandler.CountTokens(w, r)
+}
+
+func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req AnthropicRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -33,10 +37,10 @@ func CountTokens(w http.ResponseWriter, r *http.Request) {
 	// Translate Claude Code-style names → Copilot IDs.
 	req.Model = ResolveCopilotModel(req.Model)
 
-	model := state.Global.FindModel(req.Model)
+	model := h.state.FindModel(req.Model)
 
 	// Translate to OpenAI format to count
-	ccReq, err := translateToOpenAI(&req, "")
+	ccReq, err := h.anthropic.ToChat(&req, "")
 	if err != nil {
 		slog.Warn("count_tokens translation failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")

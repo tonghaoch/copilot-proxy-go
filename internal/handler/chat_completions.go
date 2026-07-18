@@ -21,7 +21,11 @@ import (
 // It proxies requests to the Copilot API, supporting both streaming and
 // non-streaming modes.
 func ChatCompletions(w http.ResponseWriter, r *http.Request) {
-	tracked := trackRequest(w, r, "chat_completions")
+	defaultHandler.ChatCompletions(w, r)
+}
+
+func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
+	tracked := trackRequest(w, r, "chat_completions", h.metrics)
 	defer tracked.Finish()
 	w = tracked.Writer
 	rec := tracked.Record
@@ -39,7 +43,7 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, _ = RewriteModelInBody(raw)
 
-	body, isStream, isAgent, err := service.ParseAndPatchChatCompletion(bytes.NewReader(raw))
+	body, isStream, isAgent, err := service.ParseAndPatchChatCompletionWithModels(bytes.NewReader(raw), h.state)
 	if err != nil {
 		api.ForwardError(w, api.InvalidRequest("invalid request body", err))
 		return
@@ -67,7 +71,7 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	rec.Initiator = initiatorStr(isAgent)
 	rec.Streaming = isStream
 
-	resp, err := service.ProxyChatCompletion(r.Context(), body, isAgent)
+	resp, err := h.copilot.ProxyChatCompletionEx(r.Context(), body, isAgent, false)
 	if err != nil {
 		api.ForwardError(w, err)
 		return

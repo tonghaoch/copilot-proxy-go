@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
-	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // ModelsListResponse is the OpenAI-compatible models list response.
@@ -30,18 +27,22 @@ type ModelEntry struct {
 
 // Models handles GET /models and /v1/models.
 func Models(w http.ResponseWriter, r *http.Request) {
-	models := state.Global.GetModels()
+	defaultHandler.Models(w, r)
+}
+
+func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
+	models := h.state.GetModels()
 
 	// Fallback: fetch models if not cached yet
 	if len(models) == 0 {
 		slog.Info("models not cached, fetching...")
-		fetched, err := service.FetchModels(r.Context())
+		fetched, err := h.copilot.FetchModels(r.Context())
 		if err != nil {
 			slog.Error("failed to fetch models", "error", err)
 			http.Error(w, `{"error": "failed to fetch models"}`, http.StatusInternalServerError)
 			return
 		}
-		state.Global.SetModels(fetched)
+		h.state.SetModels(fetched)
 		models = fetched
 	}
 

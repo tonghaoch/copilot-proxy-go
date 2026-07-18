@@ -27,6 +27,10 @@ const interleavedThinkingReminder = `<system-reminder>you MUST follow interleave
 
 // translateToOpenAI converts an Anthropic request to an OpenAI Chat Completions payload.
 func translateToOpenAI(req *AnthropicRequest, extraPrompt string) (*ChatCompletionRequest, error) {
+	return translateToOpenAIWithModels(req, extraPrompt, state.Global)
+}
+
+func translateToOpenAIWithModels(req *AnthropicRequest, extraPrompt string, models ModelStore) (*ChatCompletionRequest, error) {
 	model := normalizeModelName(req.Model)
 	isClaudeModel := isClaude(model)
 
@@ -87,7 +91,7 @@ func translateToOpenAI(req *AnthropicRequest, extraPrompt string) (*ChatCompleti
 
 	// Thinking budget
 	if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
-		budget := clampThinkingBudget(req.Model, req.Thinking.BudgetTokens, req.MaxTokens)
+		budget := clampThinkingBudget(models, req.Model, req.Thinking.BudgetTokens, req.MaxTokens)
 		ccReq.MaxTokens = &budget
 	}
 
@@ -304,8 +308,8 @@ func translateToolChoice(raw json.RawMessage) any {
 }
 
 // clampThinkingBudget clamps the thinking budget to model-supported bounds.
-func clampThinkingBudget(modelID string, budget, maxTokens int) int {
-	model := state.Global.FindModel(modelID)
+func clampThinkingBudget(models ModelStore, modelID string, budget, maxTokens int) int {
+	model := models.FindModel(modelID)
 	minBudget := 1024
 	maxBudget := maxTokens - 1
 

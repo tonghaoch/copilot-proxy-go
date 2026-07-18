@@ -6,13 +6,16 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
-	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // Messages handles POST /v1/messages — the Anthropic-compatible endpoint.
 // It routes to one of three backends based on the model's supported_endpoints.
 func Messages(w http.ResponseWriter, r *http.Request) {
-	tracked := trackRequest(w, r, "messages")
+	defaultHandler.Messages(w, r)
+}
+
+func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
+	tracked := trackRequest(w, r, "messages", h.metrics)
 	defer tracked.Finish()
 	ww := tracked.Writer
 	rec := tracked.Record
@@ -41,10 +44,10 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subagent := detectSubagentMarker(req.Messages)
-	buildSessionSnapshot(&req, betaHeader, subagent)
+	buildSessionSnapshot(&req, betaHeader, subagent, h.metrics)
 	mergeToolResultBlocks(&req)
 	filterUnsupportedTools(&req)
-	model := state.Global.FindModel(req.Model)
+	model := h.state.FindModel(req.Model)
 
 	forceAgent := false
 	if subagent != nil {
@@ -66,15 +69,15 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 	if model != nil && isMessagesSupported(model) {
 		slog.Info("routing to Messages API", "model", req.Model)
 		rec.Backend = "messages"
-		handleWithMessagesAPI(ww, r, &req, forceAgent, body, rec)
+		h.handleWithMessagesAPI(ww, r, &req, forceAgent, body, rec)
 	} else if model != nil && isResponsesSupported(model) {
 		slog.Info("routing to Responses API", "model", req.Model)
 		rec.Backend = "responses"
-		handleWithResponsesAPI(ww, r, &req, forceAgent, rec)
+		h.handleWithResponsesAPI(ww, r, &req, forceAgent, rec)
 	} else {
 		slog.Info("routing to Chat Completions API", "model", req.Model)
 		rec.Backend = "chat_completions"
-		handleWithChatCompletions(ww, r, &req, forceAgent, rec)
+		h.handleWithChatCompletions(ww, r, &req, forceAgent, rec)
 	}
 
 }

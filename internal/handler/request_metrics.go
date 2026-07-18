@@ -10,17 +10,19 @@ import (
 )
 
 type trackedRequest struct {
-	Writer chimw.WrapResponseWriter
-	Record *state.RequestRecord
-	start  time.Time
+	Writer  chimw.WrapResponseWriter
+	Record  *state.RequestRecord
+	start   time.Time
+	metrics MetricsStore
 }
 
-func trackRequest(w http.ResponseWriter, r *http.Request, endpoint string) *trackedRequest {
+func trackRequest(w http.ResponseWriter, r *http.Request, endpoint string, metrics MetricsStore) *trackedRequest {
 	start := time.Now()
 	return &trackedRequest{
-		Writer: chimw.NewWrapResponseWriter(w, r.ProtoMajor),
-		Record: &state.RequestRecord{Timestamp: start, Endpoint: endpoint},
-		start:  start,
+		Writer:  chimw.NewWrapResponseWriter(w, r.ProtoMajor),
+		Record:  &state.RequestRecord{Timestamp: start, Endpoint: endpoint},
+		start:   start,
+		metrics: metrics,
 	}
 }
 
@@ -30,5 +32,5 @@ func (t *trackedRequest) Finish() {
 	if t.Record.StatusCode == 0 {
 		t.Record.StatusCode = http.StatusOK
 	}
-	state.Metrics.RecordRequest(*t.Record)
+	t.metrics.RecordRequest(*t.Record)
 }

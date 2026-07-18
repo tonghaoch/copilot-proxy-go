@@ -12,14 +12,13 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
 // rawBody is the original request bytes to preserve unknown fields.
-func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rawBody []byte, rec *state.RequestRecord) {
+func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rawBody []byte, rec *state.RequestRecord) {
 	// Parse into map to preserve unknown fields
 	var payload map[string]any
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
@@ -39,7 +38,7 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
 	// Copilot rejects it.
-	requestedEffort := applyAdaptiveThinkingInMap(payload, req)
+	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state)
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -65,11 +64,11 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 
 	slog.Info("messages API (native)", "model", req.Model, "stream", req.Stream, "vision", vision)
 
-	resp, err := service.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
+	resp, err := h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
 	if err != nil {
 		// If Copilot rejected our effort, cache the supported list, rewrite
 		// the payload, and retry exactly once. Anything else propagates.
-		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(r.Context(), err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
+		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(r.Context(), h.copilot, err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
 			if retryErr != nil {
 				api.ForwardError(w, retryErr)
 				return
@@ -90,7 +89,7 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 			return
 		}
 
-		if err := readSSE(resp.Body, func(eventType, data string) error {
+		if err := h.streams.Read(resp.Body, func(eventType, data string) error {
 			// Sniff token counts from native Anthropic events
 			captureNativeTokens(eventType, data, rec)
 
@@ -195,8 +194,8 @@ func filterThinkingBlocksInMap(payload map[string]any, req *AnthropicRequest) {
 // in the map representation. Only applies when the model supports adaptive
 // thinking. Returns the effort actually written to payload (after consulting
 // the session effort cache); "" when no effort was set.
-func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest) string {
-	model := state.Global.FindModel(req.Model)
+func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, models ModelStore) string {
+	model := models.FindModel(req.Model)
 	if model == nil || !model.Capabilities.Supports.AdaptiveThinking {
 		return ""
 	}
@@ -243,7 +242,7 @@ func setOutputConfigEffort(payload map[string]any, effort string) {
 //	retried = false          → caller should forward the original error
 //	retried = true, err = nil → retryResp is the new response, use it
 //	retried = true, err != nil → retry itself failed; caller should forward err
-func maybeRetryWithFallbackEffort(ctx context.Context, origErr error, payload map[string]any, req *AnthropicRequest, requestedEffort, betaHeader string, vision, isAgent bool) (retried bool, retryResp *http.Response, retryErr error) {
+func maybeRetryWithFallbackEffort(ctx context.Context, client CopilotClient, origErr error, payload map[string]any, req *AnthropicRequest, requestedEffort, betaHeader string, vision, isAgent bool) (retried bool, retryResp *http.Response, retryErr error) {
 	if requestedEffort == "" {
 		return false, nil, nil
 	}
@@ -281,7 +280,7 @@ func maybeRetryWithFallbackEffort(ctx context.Context, origErr error, payload ma
 	if err != nil {
 		return true, nil, err
 	}
-	resp, err := service.ProxyMessages(ctx, body, betaHeader, vision, isAgent)
+	resp, err := client.ProxyMessages(ctx, body, betaHeader, vision, isAgent)
 	return true, resp, err
 }
 

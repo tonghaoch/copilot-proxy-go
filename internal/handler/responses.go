@@ -10,13 +10,15 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
-	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // Responses handles POST /responses and /v1/responses — OpenAI Responses API passthrough.
 func Responses(w http.ResponseWriter, r *http.Request) {
-	tracked := trackRequest(w, r, "responses")
+	defaultHandler.Responses(w, r)
+}
+
+func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
+	tracked := trackRequest(w, r, "responses", h.metrics)
 	defer tracked.Finish()
 	w = tracked.Writer
 	rec := tracked.Record
@@ -37,7 +39,7 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	rec.Model = modelID
 	rec.RoutedModel = modelID
 
-	model := state.Global.FindModel(modelID)
+	model := h.state.FindModel(modelID)
 	if model == nil || !isResponsesSupported(model) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -75,7 +77,7 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		api.ForwardError(w, err)
 		return
 	}
-	resp, err := service.ProxyResponses(r.Context(), body, isAgent, vision)
+	resp, err := h.copilot.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -83,7 +85,7 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if isStream {
-		streamResponsesPassthrough(w, resp, rec)
+		h.streamResponsesPassthrough(w, resp, rec)
 	} else {
 		var captured bytes.Buffer
 		w.Header().Set("Content-Type", "application/json")

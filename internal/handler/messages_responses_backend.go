@@ -7,12 +7,11 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
-	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
-	payload, err := translateToResponses(req, config.GetExtraPrompt(normalizeModelName(req.Model)))
+func (h *Handler) handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
+	payload, err := h.anthropic.ToResponses(req, config.GetExtraPrompt(normalizeModelName(req.Model)))
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -26,20 +25,20 @@ func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *Anthrop
 	vision := hasVision(req.Messages)
 	slog.Info("responses API backend", "model", payload.Model, "stream", payload.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
-	resp, err := service.ProxyResponses(r.Context(), body, isAgent, vision)
+	resp, err := h.copilot.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 	if req.Stream {
-		streamResponsesToAnthropic(w, resp, payload.Model, rec)
+		h.streamResponsesToAnthropic(w, resp, payload.Model, rec)
 	} else {
-		nonStreamResponsesToAnthropic(w, resp, rec)
+		h.nonStreamResponsesToAnthropic(w, resp, rec)
 	}
 }
 
-func nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
+func (h *Handler) nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
 	var result ResponsesResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		api.ForwardError(w, err)
@@ -53,17 +52,17 @@ func nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, r
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(translateResponsesResultToAnthropic(&result))
+	json.NewEncoder(w).Encode(h.anthropic.FromResponses(&result))
 }
 
-func streamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
+func (h *Handler) streamResponsesToAnthropic(w http.ResponseWriter, resp *http.Response, model string, rec *state.RequestRecord) {
 	flusher, err := beginSSE(w)
 	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 	streamState := NewResponsesStreamState(model)
-	if err := readSSE(resp.Body, func(eventType, data string) error {
+	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
 		events, err := streamState.TranslateEvent(eventType, data)
 		if err != nil {
 			return err

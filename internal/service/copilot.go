@@ -40,6 +40,9 @@ var defaultClient = &Client{
 	refreshToken: auth.RefreshCopilotTokenNow,
 }
 
+// DefaultClient returns the process-wide Copilot client used by the CLI.
+func DefaultClient() *Client { return defaultClient }
+
 // isTokenExpired checks if the response indicates an expired/invalid token.
 func isTokenExpired(statusCode int) bool {
 	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
@@ -185,6 +188,15 @@ type ChatCompletionPayload struct {
 // missing, and determines the initiator. Returns the patched body bytes,
 // whether streaming is requested, and whether this is an agent-initiated request.
 func ParseAndPatchChatCompletion(body io.Reader) ([]byte, bool, bool, error) {
+	return ParseAndPatchChatCompletionWithModels(body, state.Global)
+}
+
+// ModelFinder supplies model capabilities without coupling parsing to global state.
+type ModelFinder interface {
+	FindModel(string) *state.Model
+}
+
+func ParseAndPatchChatCompletionWithModels(body io.Reader, models ModelFinder) ([]byte, bool, bool, error) {
 	raw, err := io.ReadAll(body)
 	if err != nil {
 		return nil, false, false, fmt.Errorf("reading request body: %w", err)
@@ -204,7 +216,7 @@ func ParseAndPatchChatCompletion(body io.Reader) ([]byte, bool, bool, error) {
 
 	// Auto-fill max_tokens from model capabilities if missing
 	if parsed.MaxTokens == nil {
-		if model := state.Global.FindModel(parsed.Model); model != nil {
+		if model := models.FindModel(parsed.Model); model != nil {
 			maxOut := model.Capabilities.Limits.MaxOutputTokens
 			if maxOut > 0 {
 				payload["max_tokens"] = maxOut
