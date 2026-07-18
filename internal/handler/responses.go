@@ -18,7 +18,6 @@ import (
 // Responses handles POST /responses and /v1/responses — OpenAI Responses API passthrough.
 func Responses(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -28,22 +27,16 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		api.ForwardError(w, &api.HTTPError{
-			Message:    "invalid request body",
-			StatusCode: http.StatusBadRequest,
-		})
+		api.ForwardError(w, api.InvalidRequest("invalid request body", err))
 		return
 	}
 
-	// Translate Claude Code-style names → Copilot IDs. The payload map is the
-	// authoritative copy that gets re-marshalled below, so update it.
 	modelID, _ := payload["model"].(string)
 	if resolved := ResolveCopilotModel(modelID); resolved != modelID {
 		modelID = resolved
 		payload["model"] = resolved
 	}
 
-	// Get model and validate support
 	model := state.Global.FindModel(modelID)
 	if model == nil || !isResponsesSupported(model) {
 		w.Header().Set("Content-Type", "application/json")
@@ -57,8 +50,6 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert tools Copilot does not accept directly: apply_patch is configurable,
-	// while Codex's local_shell is always converted for Responses compatibility.
 	if tools, ok := payload["tools"].([]any); ok {
 		if config.Get().UseFunctionApplyPatch {
 			payload["tools"] = convertApplyPatchTools(tools)
@@ -67,26 +58,20 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		payload["tools"] = convertLocalShellTools(tools)
 		payload["tools"] = removeWebSearchTools(payload["tools"].([]any))
 	}
-
-	// Nullify service_tier
 	payload["service_tier"] = nil
 
-	// Detect vision and initiator
 	isStream, _ := payload["stream"].(bool)
 	vision := detectVisionInResponses(payload)
 	isAgent := detectAgentInResponses(payload)
-
 	logger.For("responses").Log("model=%s stream=%v initiator=%s vision=%v", modelID, isStream, initiatorStr(isAgent), vision)
 	slog.Info("responses passthrough", "model", modelID, "stream", isStream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
 
-	// Re-marshal
 	body, err = json.Marshal(payload)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
-
 	resp, err := service.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -95,16 +80,9 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	rec := state.RequestRecord{
-		Timestamp:   start,
-		Endpoint:    "responses",
-		Model:       modelID,
-		RoutedModel: modelID,
-		Backend:     "responses",
-		RequestType: "normal",
-		Initiator:   initiatorStr(isAgent),
-		HasVision:   vision,
-		Streaming:   isStream,
-		StatusCode:  resp.StatusCode,
+		Timestamp: start, Endpoint: "responses", Model: modelID, RoutedModel: modelID,
+		Backend: "responses", RequestType: "normal", Initiator: initiatorStr(isAgent),
+		HasVision: vision, Streaming: isStream, StatusCode: resp.StatusCode,
 	}
 	if isStream {
 		streamResponsesPassthrough(w, resp, &rec)
@@ -118,204 +96,6 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 			captureResponsesUsage(&rec, result.Usage)
 		}
 	}
-
 	rec.LatencyMs = time.Since(start).Milliseconds()
 	state.Metrics.RecordRequest(rec)
-}
-
-// streamResponsesPassthrough forwards Responses SSE events, applying stream
-// ID synchronization to fix @ai-sdk/openai crashes.
-func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	sync := NewStreamIDSync()
-
-	if err := readSSE(resp.Body, func(eventType, data string) error {
-		captureResponsesStreamUsage(data, rec)
-		// Apply stream ID synchronization
-		data = sync.Process(eventType, data)
-
-		if eventType != "" {
-			if _, err := io.WriteString(w, "event: "+eventType+"\n"); err != nil {
-				return err
-			}
-		}
-		if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
-			return err
-		}
-		flusher.Flush()
-		return nil
-	}); err != nil {
-		slog.Error("responses passthrough streaming error", "error", err)
-	}
-}
-
-func captureResponsesStreamUsage(data string, rec *state.RequestRecord) {
-	var event ResponsesStreamEvent
-	if json.Unmarshal([]byte(data), &event) != nil || len(event.Response) == 0 {
-		return
-	}
-	var response ResponsesResult
-	if json.Unmarshal(event.Response, &response) == nil {
-		captureResponsesUsage(rec, response.Usage)
-	}
-}
-
-func captureResponsesUsage(rec *state.RequestRecord, usage *ResponsesUsage) {
-	if usage == nil {
-		return
-	}
-	rec.InputTokens = int64(usage.InputTokens)
-	rec.OutputTokens = int64(usage.OutputTokens)
-	if usage.InputTokensDetails != nil {
-		rec.CachedTokens = int64(usage.InputTokensDetails.CachedTokens)
-	}
-}
-
-func convertApplyPatchTools(tools []any) []any {
-	result := make([]any, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
-		if !ok {
-			result = append(result, t)
-			continue
-		}
-		toolType, _ := tool["type"].(string)
-		toolName, _ := tool["name"].(string)
-
-		if toolType == "custom" && toolName == "apply_patch" {
-			result = append(result, map[string]any{
-				"type":        "function",
-				"name":        "apply_patch",
-				"description": tool["description"],
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input": map[string]string{
-							"type":        "string",
-							"description": "The entire contents of the apply_patch command",
-						},
-					},
-					"required": []string{"input"},
-				},
-				"strict": false,
-			})
-		} else {
-			result = append(result, t)
-		}
-	}
-	return result
-}
-
-// convertLocalShellTools converts Codex's local_shell tool to a function tool.
-func convertLocalShellTools(tools []any) []any {
-	result := make([]any, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
-		if !ok {
-			result = append(result, t)
-			continue
-		}
-		toolType, _ := tool["type"].(string)
-		if toolType != "local_shell" {
-			result = append(result, t)
-			continue
-		}
-
-		result = append(result, map[string]any{
-			"type":        "function",
-			"name":        "local_shell",
-			"description": "Run a shell command locally.",
-			"parameters": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "array",
-						"items":       map[string]string{"type": "string"},
-						"description": "Command and arguments to execute.",
-					},
-					"workdir": map[string]string{
-						"type":        "string",
-						"description": "Working directory for the command.",
-					},
-					"timeout_ms": map[string]string{
-						"type":        "integer",
-						"description": "Maximum execution time in milliseconds.",
-					},
-				},
-				"required":             []string{"command"},
-				"additionalProperties": false,
-			},
-			"strict": false,
-		})
-	}
-	return result
-}
-
-// removeWebSearchTools filters out web_search tools.
-func removeWebSearchTools(tools []any) []any {
-	result := make([]any, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
-		if !ok {
-			result = append(result, t)
-			continue
-		}
-		if toolType, _ := tool["type"].(string); toolType == "web_search" {
-			continue
-		}
-		result = append(result, t)
-	}
-	return result
-}
-
-// detectVisionInResponses checks input items for image content.
-func detectVisionInResponses(payload map[string]any) bool {
-	input, ok := payload["input"].([]any)
-	if !ok {
-		return false
-	}
-	return containsImageRecursive(input)
-}
-
-func containsImageRecursive(items []any) bool {
-	for _, item := range items {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if t, _ := m["type"].(string); t == "input_image" {
-			return true
-		}
-		// Check nested content
-		if content, ok := m["content"].([]any); ok {
-			if containsImageRecursive(content) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// detectAgentInResponses checks the last input item's role.
-func detectAgentInResponses(payload map[string]any) bool {
-	input, ok := payload["input"].([]any)
-	if !ok || len(input) == 0 {
-		return false
-	}
-	last, ok := input[len(input)-1].(map[string]any)
-	if !ok {
-		return false
-	}
-	role, _ := last["role"].(string)
-	return role == "assistant" || role == ""
 }

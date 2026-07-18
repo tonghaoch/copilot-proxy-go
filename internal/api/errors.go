@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,8 +12,10 @@ import (
 // HTTPError wraps an HTTP response error.
 type HTTPError struct {
 	Message    string
+	Type       string
 	StatusCode int
 	Body       string
+	Cause      error
 }
 
 func (e *HTTPError) Error() string {
@@ -20,6 +23,19 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("HTTP %d: %s — %s", e.StatusCode, e.Message, e.Body)
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
+}
+
+func (e *HTTPError) Unwrap() error { return e.Cause }
+
+// InvalidRequest creates a client-facing 400 error for malformed or invalid
+// request data while retaining the underlying cause for logs and inspection.
+func InvalidRequest(message string, cause error) *HTTPError {
+	return &HTTPError{
+		Message:    message,
+		Type:       "invalid_request_error",
+		StatusCode: http.StatusBadRequest,
+		Cause:      cause,
+	}
 }
 
 // NewHTTPError creates an HTTPError from an HTTP response.
@@ -48,8 +64,15 @@ func ForwardError(w http.ResponseWriter, err error) {
 	message := err.Error()
 	errType := "internal_error"
 
-	if httpErr, ok := err.(*HTTPError); ok {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
 		statusCode = httpErr.StatusCode
+		message = httpErr.Message
+		if httpErr.Type != "" {
+			errType = httpErr.Type
+		} else if statusCode >= 400 && statusCode < 500 {
+			errType = "invalid_request_error"
+		}
 		// Try to parse the body as JSON error
 		var parsed struct {
 			Error struct {
@@ -61,7 +84,9 @@ func ForwardError(w http.ResponseWriter, err error) {
 		if json.Unmarshal([]byte(httpErr.Body), &parsed) == nil {
 			if parsed.Error.Message != "" {
 				message = parsed.Error.Message
-				errType = parsed.Error.Type
+				if parsed.Error.Type != "" {
+					errType = parsed.Error.Type
+				}
 			} else if parsed.Message != "" {
 				message = parsed.Message
 			}

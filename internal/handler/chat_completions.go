@@ -39,7 +39,7 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	body, isStream, isAgent, err := service.ParseAndPatchChatCompletion(bytes.NewReader(raw))
 	if err != nil {
-		api.ForwardError(w, err)
+		api.ForwardError(w, api.InvalidRequest("invalid request body", err))
 		return
 	}
 
