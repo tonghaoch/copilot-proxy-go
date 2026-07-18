@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -36,7 +37,7 @@ func Auth(next http.Handler) http.Handler {
 		// Check against configured keys
 		valid := false
 		for _, k := range keys {
-			if k == apiKey {
+			if subtle.ConstantTimeCompare([]byte(k), []byte(apiKey)) == 1 {
 				valid = true
 				break
 			}

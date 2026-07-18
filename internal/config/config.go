@@ -141,7 +141,23 @@ func Get() *Config {
 	if current == nil {
 		return defaultConfig()
 	}
-	return current
+	return cloneConfig(current)
+}
+
+func cloneConfig(cfg *Config) *Config {
+	cloned := *cfg
+	cloned.Auth.APIKeys = append([]string(nil), cfg.Auth.APIKeys...)
+	cloned.ExtraPrompts = cloneStringMap(cfg.ExtraPrompts)
+	cloned.ModelReasoningEfforts = cloneStringMap(cfg.ModelReasoningEfforts)
+	return &cloned
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // SetSmallModel updates the small model field and persists the config to disk.

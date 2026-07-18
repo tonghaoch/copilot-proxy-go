@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,31 +20,10 @@ func isTokenExpired(statusCode int) bool {
 }
 
 // FetchModels retrieves available models from the Copilot API.
-func FetchModels() ([]state.Model, error) {
-	req, err := http.NewRequest(http.MethodGet, api.CopilotURL("/models"), nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating models request: %w", err)
-	}
-	req.Header = api.BuildCopilotHeadersFromState()
-
-	resp, err := http.DefaultClient.Do(req)
+func FetchModels(ctx context.Context) ([]state.Model, error) {
+	resp, err := doCopilotRequest(ctx, http.MethodGet, "/models", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetching models: %w", err)
-	}
-
-	// Retry once on token expiry
-	if isTokenExpired(resp.StatusCode) {
-		resp.Body.Close()
-		slog.Warn("models request got auth error, refreshing token and retrying", "status", resp.StatusCode)
-		if err := auth.RefreshCopilotTokenNow(); err != nil {
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
-		req, _ = http.NewRequest(http.MethodGet, api.CopilotURL("/models"), nil)
-		req.Header = api.BuildCopilotHeadersFromState()
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("fetching models (retry): %w", err)
-		}
 	}
 	defer resp.Body.Close()
 
@@ -60,187 +40,85 @@ func FetchModels() ([]state.Model, error) {
 
 // ProxyChatCompletion forwards a chat completion request to the Copilot API.
 // Used by the /chat/completions passthrough endpoint.
-func ProxyChatCompletion(body []byte, isAgent bool) (*http.Response, error) {
-	return ProxyChatCompletionEx(body, isAgent, false)
+func ProxyChatCompletion(ctx context.Context, body []byte, isAgent bool) (*http.Response, error) {
+	return ProxyChatCompletionEx(ctx, body, isAgent, false)
 }
 
 // ProxyChatCompletionEx forwards a chat completion request with vision support.
 // Used by the Messages handler when routing through Chat Completions backend.
-func ProxyChatCompletionEx(body []byte, isAgent, vision bool) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/chat/completions"), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating chat completion request: %w", err)
-	}
-
-	req.Header = api.BuildCopilotHeadersFromState()
-	api.SetInitiatorHeader(req.Header, isAgent)
-	if vision {
-		req.Header.Set("Copilot-Vision-Request", "true")
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("proxying chat completion: %w", err)
-	}
-
-	// Retry once on token expiry
-	if isTokenExpired(resp.StatusCode) {
-		resp.Body.Close()
-		slog.Warn("chat completion got auth error, refreshing token and retrying", "status", resp.StatusCode)
-		if err := auth.RefreshCopilotTokenNow(); err != nil {
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
-		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/chat/completions"), bytes.NewReader(body))
-		req.Header = api.BuildCopilotHeadersFromState()
-		api.SetInitiatorHeader(req.Header, isAgent)
-		if vision {
-			req.Header.Set("Copilot-Vision-Request", "true")
-		}
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("proxying chat completion (retry): %w", err)
-		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		return nil, api.NewHTTPError(resp)
-	}
-
-	return resp, nil
+func ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
+	return doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(isAgent, vision, ""))
 }
 
 // ProxyMessages forwards a request to the Copilot native Messages API.
-func ProxyMessages(body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/v1/messages"), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating messages request: %w", err)
-	}
-
-	req.Header = api.BuildCopilotHeadersFromState()
-	api.SetInitiatorHeader(req.Header, isAgent)
-	if betaHeader != "" {
-		req.Header.Set("Anthropic-Beta", betaHeader)
-	}
-	if vision {
-		req.Header.Set("Copilot-Vision-Request", "true")
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("proxying messages: %w", err)
-	}
-
-	// Retry once on token expiry
-	if isTokenExpired(resp.StatusCode) {
-		resp.Body.Close()
-		slog.Warn("messages request got auth error, refreshing token and retrying", "status", resp.StatusCode)
-		if err := auth.RefreshCopilotTokenNow(); err != nil {
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
-		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/v1/messages"), bytes.NewReader(body))
-		req.Header = api.BuildCopilotHeadersFromState()
-		api.SetInitiatorHeader(req.Header, isAgent)
-		if betaHeader != "" {
-			req.Header.Set("Anthropic-Beta", betaHeader)
-		}
-		if vision {
-			req.Header.Set("Copilot-Vision-Request", "true")
-		}
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("proxying messages (retry): %w", err)
-		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		return nil, api.NewHTTPError(resp)
-	}
-
-	return resp, nil
+func ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
+	return doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(isAgent, vision, betaHeader))
 }
 
 // ProxyResponses forwards a request to the Copilot Responses API.
-func ProxyResponses(body []byte, isAgent, vision bool) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/responses"), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating responses request: %w", err)
-	}
-
-	req.Header = api.BuildCopilotHeadersFromState()
-	api.SetInitiatorHeader(req.Header, isAgent)
-	if vision {
-		req.Header.Set("Copilot-Vision-Request", "true")
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("proxying responses: %w", err)
-	}
-
-	// Retry once on token expiry
-	if isTokenExpired(resp.StatusCode) {
-		resp.Body.Close()
-		slog.Warn("responses request got auth error, refreshing token and retrying", "status", resp.StatusCode)
-		if err := auth.RefreshCopilotTokenNow(); err != nil {
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
-		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/responses"), bytes.NewReader(body))
-		req.Header = api.BuildCopilotHeadersFromState()
-		api.SetInitiatorHeader(req.Header, isAgent)
-		if vision {
-			req.Header.Set("Copilot-Vision-Request", "true")
-		}
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("proxying responses (retry): %w", err)
-		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		return nil, api.NewHTTPError(resp)
-	}
-
-	return resp, nil
+func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
+	return doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
 }
 
 // ProxyEmbeddings forwards a request to the Copilot Embeddings API.
-func ProxyEmbeddings(body []byte) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, api.CopilotURL("/embeddings"), bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating embeddings request: %w", err)
+func ProxyEmbeddings(ctx context.Context, body []byte) (*http.Response, error) {
+	return doCopilotRequest(ctx, http.MethodPost, "/embeddings", body, nil)
+}
+
+func requestHeaders(isAgent, vision bool, betaHeader string) func(http.Header) {
+	return func(header http.Header) {
+		api.SetInitiatorHeader(header, isAgent)
+		if vision {
+			header.Set("Copilot-Vision-Request", "true")
+		}
+		if betaHeader != "" {
+			header.Set("Anthropic-Beta", betaHeader)
+		}
+	}
+}
+
+func doCopilotRequest(ctx context.Context, method, path string, body []byte, configure func(http.Header)) (*http.Response, error) {
+	buildRequest := func() (*http.Request, error) {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, api.CopilotURL(path), reader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header = api.BuildCopilotHeadersFromState()
+		if configure != nil {
+			configure(req.Header)
+		}
+		return req, nil
 	}
 
-	req.Header = api.BuildCopilotHeadersFromState()
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := buildRequest()
+		if err != nil {
+			return nil, fmt.Errorf("creating upstream request: %w", err)
+		}
+		resp, err := api.HTTPClient().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("sending upstream request: %w", err)
+		}
+		if !isTokenExpired(resp.StatusCode) || attempt == 1 {
+			if resp.StatusCode != http.StatusOK {
+				err := api.NewHTTPError(resp)
+				resp.Body.Close()
+				return nil, err
+			}
+			return resp, nil
+		}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("proxying embeddings: %w", err)
-	}
-
-	// Retry once on token expiry
-	if isTokenExpired(resp.StatusCode) {
 		resp.Body.Close()
-		slog.Warn("embeddings request got auth error, refreshing token and retrying", "status", resp.StatusCode)
+		slog.Warn("upstream request got auth error, refreshing token and retrying", "path", path, "status", resp.StatusCode)
 		if err := auth.RefreshCopilotTokenNow(); err != nil {
 			return nil, fmt.Errorf("token refresh failed: %w", err)
 		}
-		req, _ = http.NewRequest(http.MethodPost, api.CopilotURL("/embeddings"), bytes.NewReader(body))
-		req.Header = api.BuildCopilotHeadersFromState()
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("proxying embeddings (retry): %w", err)
-		}
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		return nil, api.NewHTTPError(resp)
-	}
-
-	return resp, nil
+	return nil, fmt.Errorf("upstream request retry exhausted")
 }
 
 // ChatCompletionPayload contains the fields we need to inspect/modify

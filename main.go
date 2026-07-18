@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -109,7 +108,7 @@ func startCmd() *cobra.Command {
 
 			// Models
 			slog.Info("fetching models...")
-			models, err := service.FetchModels()
+			models, err := service.FetchModels(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("failed to fetch models: %w", err)
 			}
@@ -257,7 +256,7 @@ func checkUsageCmd() *cobra.Command {
 			}
 			req.Header = api.BuildGitHubHeadersFromState()
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := api.HTTPClient().Do(req)
 			if err != nil {
 				return fmt.Errorf("failed to fetch usage: %w", err)
 			}
@@ -439,11 +438,7 @@ func (h *cleanHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
 func (h *cleanHandler) WithGroup(name string) slog.Handler       { return h }
 
 func setupProxy() {
-	transport := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-	}
-	http.DefaultClient.Transport = transport
+	api.ConfigureHTTPClient(true)
 
 	proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"}
 	for _, v := range proxyVars {

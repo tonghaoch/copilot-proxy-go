@@ -21,7 +21,7 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("embeddings request")
 
-	resp, err := service.ProxyEmbeddings(body)
+	resp, err := service.ProxyEmbeddings(r.Context(), body)
 	if err != nil {
 		api.ForwardError(w, err)
 		return

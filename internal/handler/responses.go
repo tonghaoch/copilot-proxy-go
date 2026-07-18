@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -86,23 +87,14 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := service.ProxyResponses(body, isAgent, vision)
+	resp, err := service.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if isStream {
-		streamResponsesPassthrough(w, resp)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
-	}
-
-	// Record metrics
-	state.Metrics.RecordRequest(state.RequestRecord{
+	rec := state.RequestRecord{
 		Timestamp:   start,
 		Endpoint:    "responses",
 		Model:       modelID,
@@ -112,14 +104,28 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 		Initiator:   initiatorStr(isAgent),
 		HasVision:   vision,
 		Streaming:   isStream,
-		LatencyMs:   time.Since(start).Milliseconds(),
 		StatusCode:  resp.StatusCode,
-	})
+	}
+	if isStream {
+		streamResponsesPassthrough(w, resp, &rec)
+	} else {
+		var captured bytes.Buffer
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, io.TeeReader(resp.Body, &captured))
+		var result ResponsesResult
+		if json.Unmarshal(captured.Bytes(), &result) == nil {
+			captureResponsesUsage(&rec, result.Usage)
+		}
+	}
+
+	rec.LatencyMs = time.Since(start).Milliseconds()
+	state.Metrics.RecordRequest(rec)
 }
 
 // streamResponsesPassthrough forwards Responses SSE events, applying stream
 // ID synchronization to fix @ai-sdk/openai crashes.
-func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response) {
+func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -134,6 +140,7 @@ func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response) {
 	sync := NewStreamIDSync()
 
 	if err := readSSE(resp.Body, func(eventType, data string) error {
+		captureResponsesStreamUsage(data, rec)
 		// Apply stream ID synchronization
 		data = sync.Process(eventType, data)
 
@@ -149,6 +156,28 @@ func streamResponsesPassthrough(w http.ResponseWriter, resp *http.Response) {
 		return nil
 	}); err != nil {
 		slog.Error("responses passthrough streaming error", "error", err)
+	}
+}
+
+func captureResponsesStreamUsage(data string, rec *state.RequestRecord) {
+	var event ResponsesStreamEvent
+	if json.Unmarshal([]byte(data), &event) != nil || len(event.Response) == 0 {
+		return
+	}
+	var response ResponsesResult
+	if json.Unmarshal(event.Response, &response) == nil {
+		captureResponsesUsage(rec, response.Usage)
+	}
+}
+
+func captureResponsesUsage(rec *state.RequestRecord, usage *ResponsesUsage) {
+	if usage == nil {
+		return
+	}
+	rec.InputTokens = int64(usage.InputTokens)
+	rec.OutputTokens = int64(usage.OutputTokens)
+	if usage.InputTokensDetails != nil {
+		rec.CachedTokens = int64(usage.InputTokensDetails.CachedTokens)
 	}
 }
 

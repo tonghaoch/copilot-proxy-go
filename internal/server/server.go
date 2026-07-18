@@ -28,7 +28,6 @@ func New(opts Options) *http.Server {
 	r := chi.NewRouter()
 
 	// Core middleware
-	r.Use(chimw.RealIP)
 	r.Use(chimw.RequestID)
 	r.Use(requestLogger)
 	r.Use(cors.Handler(cors.Options{

@@ -115,13 +115,13 @@ func (s *State) SetAccountType(t string) {
 func (s *State) GetModels() []Model {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.models
+	return cloneModels(s.models)
 }
 
 func (s *State) SetModels(m []Model) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.models = m
+	s.models = cloneModels(m)
 }
 
 func (s *State) GetVSCodeVersion() string {
@@ -166,10 +166,24 @@ func (s *State) FindModel(id string) *Model {
 	defer s.mu.RUnlock()
 	for i := range s.models {
 		if s.models[i].ID == id {
-			return &s.models[i]
+			model := cloneModel(s.models[i])
+			return &model
 		}
 	}
 	return nil
+}
+
+func cloneModels(models []Model) []Model {
+	cloned := make([]Model, len(models))
+	for i := range models {
+		cloned[i] = cloneModel(models[i])
+	}
+	return cloned
+}
+
+func cloneModel(model Model) Model {
+	model.SupportedEndpoints = append([]string(nil), model.SupportedEndpoints...)
+	return model
 }
 
 // --- Paths ---

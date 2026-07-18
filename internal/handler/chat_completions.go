@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"encoding/json"
@@ -60,21 +61,14 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		slog.Info("chat completion request", "stream", isStream, "initiator", initiatorStr(isAgent))
 	}
 
-	resp, err := service.ProxyChatCompletion(body, isAgent)
+	resp, err := service.ProxyChatCompletion(r.Context(), body, isAgent)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if isStream {
-		streamSSE(w, resp.Body)
-	} else {
-		forwardJSON(w, resp)
-	}
-
-	// Record metrics
-	state.Metrics.RecordRequest(state.RequestRecord{
+	rec := state.RequestRecord{
 		Timestamp:   start,
 		Endpoint:    "chat_completions",
 		Model:       modelName,
@@ -83,13 +77,20 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		RequestType: "normal",
 		Initiator:   initiatorStr(isAgent),
 		Streaming:   isStream,
-		LatencyMs:   time.Since(start).Milliseconds(),
 		StatusCode:  resp.StatusCode,
-	})
+	}
+	if isStream {
+		streamSSE(w, resp.Body, &rec)
+	} else {
+		forwardJSON(w, resp, &rec)
+	}
+
+	rec.LatencyMs = time.Since(start).Milliseconds()
+	state.Metrics.RecordRequest(rec)
 }
 
 // streamSSE proxies an SSE stream from the Copilot API to the client.
-func streamSSE(w http.ResponseWriter, body io.Reader) {
+func streamSSE(w http.ResponseWriter, body io.Reader, rec *state.RequestRecord) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -107,6 +108,12 @@ func streamSSE(w http.ResponseWriter, body io.Reader) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
+			var chunk ChatCompletionChunk
+			if json.Unmarshal([]byte(data), &chunk) == nil {
+				captureChatUsage(rec, chunk.Usage)
+			}
+		}
 		fmt.Fprintf(w, "%s\n", line)
 		// Flush after empty lines (SSE event boundary)
 		if line == "" {
@@ -120,8 +127,24 @@ func streamSSE(w http.ResponseWriter, body io.Reader) {
 }
 
 // forwardJSON forwards a non-streaming JSON response.
-func forwardJSON(w http.ResponseWriter, resp *http.Response) {
+func forwardJSON(w http.ResponseWriter, resp *http.Response, rec *state.RequestRecord) {
+	var captured bytes.Buffer
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	io.Copy(w, io.TeeReader(resp.Body, &captured))
+	var result ChatCompletionResponse
+	if json.Unmarshal(captured.Bytes(), &result) == nil {
+		captureChatUsage(rec, result.Usage)
+	}
+}
+
+func captureChatUsage(rec *state.RequestRecord, usage *ChatCompletionUsage) {
+	if usage == nil {
+		return
+	}
+	rec.InputTokens = int64(usage.PromptTokens)
+	rec.OutputTokens = int64(usage.CompletionTokens)
+	if usage.PromptTokensDetails != nil {
+		rec.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
+	}
 }

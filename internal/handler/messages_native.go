@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -64,11 +65,11 @@ func handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, req *Anthropi
 
 	slog.Info("messages API (native)", "model", req.Model, "stream", req.Stream, "vision", vision)
 
-	resp, err := service.ProxyMessages(body, betaHeader, vision, isAgent)
+	resp, err := service.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
 	if err != nil {
 		// If Copilot rejected our effort, cache the supported list, rewrite
 		// the payload, and retry exactly once. Anything else propagates.
-		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
+		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(r.Context(), err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
 			if retryErr != nil {
 				api.ForwardError(w, retryErr)
 				return
@@ -246,7 +247,7 @@ func setOutputConfigEffort(payload map[string]any, effort string) {
 //	retried = false          → caller should forward the original error
 //	retried = true, err = nil → retryResp is the new response, use it
 //	retried = true, err != nil → retry itself failed; caller should forward err
-func maybeRetryWithFallbackEffort(origErr error, payload map[string]any, req *AnthropicRequest, requestedEffort, betaHeader string, vision, isAgent bool) (retried bool, retryResp *http.Response, retryErr error) {
+func maybeRetryWithFallbackEffort(ctx context.Context, origErr error, payload map[string]any, req *AnthropicRequest, requestedEffort, betaHeader string, vision, isAgent bool) (retried bool, retryResp *http.Response, retryErr error) {
 	if requestedEffort == "" {
 		return false, nil, nil
 	}
@@ -284,7 +285,7 @@ func maybeRetryWithFallbackEffort(origErr error, payload map[string]any, req *An
 	if err != nil {
 		return true, nil, err
 	}
-	resp, err := service.ProxyMessages(body, betaHeader, vision, isAgent)
+	resp, err := service.ProxyMessages(ctx, body, betaHeader, vision, isAgent)
 	return true, resp, err
 }
 

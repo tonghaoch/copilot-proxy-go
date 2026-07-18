@@ -47,7 +47,7 @@ func FetchVSCodeVersion() string {
 		return FallbackVSCodeVersion
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient().Do(req)
 	if err != nil {
 		slog.Warn("failed to fetch VS Code version", "error", err)
 		return FallbackVSCodeVersion

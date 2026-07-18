@@ -200,7 +200,7 @@ func handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *Anth
 	slog.Info("chat completions backend", "model", ccReq.Model, "stream", ccReq.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
 
-	resp, err := service.ProxyChatCompletionEx(body, isAgent, vision)
+	resp, err := service.ProxyChatCompletionEx(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -303,7 +303,7 @@ func handleWithResponsesAPI(w http.ResponseWriter, r *http.Request, req *Anthrop
 	slog.Info("responses API backend", "model", payload.Model, "stream", payload.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
 
-	resp, err := service.ProxyResponses(body, isAgent, vision)
+	resp, err := service.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
 		api.ForwardError(w, err)
 		return

@@ -35,7 +35,7 @@ func Models(w http.ResponseWriter, r *http.Request) {
 	// Fallback: fetch models if not cached yet
 	if len(models) == 0 {
 		slog.Info("models not cached, fetching...")
-		fetched, err := service.FetchModels()
+		fetched, err := service.FetchModels(r.Context())
 		if err != nil {
 			slog.Error("failed to fetch models", "error", err)
 			http.Error(w, `{"error": "failed to fetch models"}`, http.StatusInternalServerError)

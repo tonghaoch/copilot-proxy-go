@@ -54,7 +54,7 @@ func RequestDeviceCode() (*DeviceCodeResponse, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.HTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("requesting device code: %w", err)
 	}
@@ -91,7 +91,7 @@ func PollAccessToken(deviceCode string, interval int) (string, error) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := api.HTTPClient().Do(req)
 		if err != nil {
 			return "", fmt.Errorf("polling access token: %w", err)
 		}
@@ -134,7 +134,7 @@ func FetchCopilotToken(githubToken, vsCodeVersion string) (*CopilotTokenResponse
 	headers := api.BuildGitHubHeaders(githubToken, vsCodeVersion)
 	req.Header = headers
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.HTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching copilot token: %w", err)
 	}
@@ -162,7 +162,7 @@ func GetUser(githubToken, vsCodeVersion string) (string, error) {
 	headers := api.BuildGitHubHeaders(githubToken, vsCodeVersion)
 	req.Header = headers
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.HTTPClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching user: %w", err)
 	}

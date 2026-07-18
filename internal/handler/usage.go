@@ -11,7 +11,7 @@ import (
 
 // Usage handles GET /usage — returns Copilot quota/usage information.
 func Usage(w http.ResponseWriter, r *http.Request) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/copilot_internal/user", nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/copilot_internal/user", nil)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -22,7 +22,7 @@ func Usage(w http.ResponseWriter, r *http.Request) {
 		state.Global.GetVSCodeVersion(),
 	)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.HTTPClient().Do(req)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
