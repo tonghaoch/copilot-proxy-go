@@ -82,3 +82,57 @@ func TestClientRefreshesAndReplaysRequestOnce(t *testing.T) {
 		t.Fatalf("expected two attempts and one refresh, got attempts=%d refreshes=%d", attempts.Load(), refreshes.Load())
 	}
 }
+
+func TestClientRetriesTransientStatusAndHonorsRetryAfter(t *testing.T) {
+	var attempts atomic.Int32
+	var waited time.Duration
+	client := NewClientWithOptions(ClientOptions{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			status := http.StatusOK
+			if attempts.Add(1) == 1 {
+				status = http.StatusTooManyRequests
+			}
+			return &http.Response{
+				StatusCode: status, Status: http.StatusText(status),
+				Header: http.Header{"Retry-After": []string{"2"}},
+				Body:   io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})},
+		BuildHeaders: func() http.Header { return make(http.Header) },
+		BuildURL:     func(path string) string { return "https://example.test" + path },
+		Retry: RetryPolicy{MaxAttempts: 3, MaxDelay: 5 * time.Second, Wait: func(_ context.Context, delay time.Duration) error {
+			waited = delay
+			return nil
+		}},
+	})
+	resp, err := client.ProxyResponses(context.Background(), []byte(`{}`), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if attempts.Load() != 2 || waited != 2*time.Second {
+		t.Fatalf("attempts=%d waited=%s", attempts.Load(), waited)
+	}
+}
+
+func TestClientRetryWaitRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := NewClientWithOptions(ClientOptions{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable",
+				Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})},
+		BuildHeaders: func() http.Header { return make(http.Header) },
+		BuildURL:     func(path string) string { return "https://example.test" + path },
+		Retry: RetryPolicy{Wait: func(ctx context.Context, _ time.Duration) error {
+			cancel()
+			return ctx.Err()
+		}},
+	})
+	_, err := client.ProxyResponses(ctx, []byte(`{}`), false, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+}

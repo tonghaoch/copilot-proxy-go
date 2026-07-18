@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -34,11 +35,24 @@ func RefreshCopilotTokenNow() error {
 }
 
 func StartTokenRefresh(expiresAt int64, refreshIn int) {
+	StartTokenRefreshContext(context.Background(), expiresAt, refreshIn)
+}
+
+// StartTokenRefreshContext refreshes tokens until the application context is
+// cancelled. Timers, rather than time.Sleep, make shutdown immediate.
+func StartTokenRefreshContext(ctx context.Context, expiresAt int64, refreshIn int) {
 	refreshDuration := calcRefreshDuration(expiresAt, refreshIn)
 	go func() {
 		for {
 			slog.Info("next Copilot token refresh scheduled", "in", refreshDuration.Round(time.Second))
-			time.Sleep(refreshDuration)
+			timer := time.NewTimer(refreshDuration)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				slog.Debug("token refresh stopped", "reason", ctx.Err())
+				return
+			case <-timer.C:
+			}
 			githubToken := state.Global.GetGithubToken()
 			vsCodeVersion := state.Global.GetVSCodeVersion()
 			slog.Info("refreshing Copilot token...")

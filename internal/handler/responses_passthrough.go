@@ -37,6 +37,7 @@ func (h *Handler) streamResponsesPassthrough(w http.ResponseWriter, resp *http.R
 		flusher.Flush()
 		return nil
 	}); err != nil {
+		rec.Error = err.Error()
 		slog.Error("responses passthrough streaming error", "error", err)
 	}
 }

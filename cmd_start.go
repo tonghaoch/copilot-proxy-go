@@ -15,6 +15,7 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/auth"
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
+	"github.com/tonghaoch/copilot-proxy-go/internal/handler"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 	"github.com/tonghaoch/copilot-proxy-go/internal/server"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
@@ -41,6 +42,8 @@ func startCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the Copilot API proxy server",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			appCtx, cancelApp := context.WithCancel(cmd.Context())
+			defer cancelApp()
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
 			}
@@ -69,12 +72,23 @@ func startCmd() *cobra.Command {
 			state.Global.SetVSCodeVersion(vsVer)
 			slog.Info("VS Code version: " + vsVer)
 
-			if err := auth.SetupAuth(githubToken); err != nil {
+			if err := auth.SetupAuthContext(appCtx, githubToken); err != nil {
 				return fmt.Errorf("authentication failed: %w", err)
 			}
 
+			copilotClient := service.NewClientWithOptions(service.ClientOptions{
+				HTTPClient:   api.HTTPClient(),
+				RefreshToken: auth.RefreshCopilotTokenNow,
+				BuildHeaders: func() http.Header {
+					return api.BuildCopilotHeaders(state.Global.GetCopilotToken(), state.Global.GetVSCodeVersion())
+				},
+				BuildURL: func(path string) string {
+					return api.GetBaseURL(state.Global.GetAccountType()) + path
+				},
+			})
+
 			slog.Info("fetching models...")
-			models, err := service.FetchModels(cmd.Context())
+			models, err := copilotClient.FetchModels(appCtx)
 			if err != nil {
 				return fmt.Errorf("failed to fetch models: %w", err)
 			}
@@ -101,18 +115,22 @@ func startCmd() *cobra.Command {
 			fmt.Printf("  Dashboard: http://%s:%d/dashboard?endpoint=http://%s:%d/usage\n", listenHost, port, listenHost, port)
 			fmt.Println()
 
-			srv := server.New(server.Options{
+			endpoints := handler.New(handler.Dependencies{
+				State: state.Global, Metrics: state.Metrics, Copilot: copilotClient, HTTP: api.HTTPClient(),
+			})
+			srv := server.NewWithHandler(server.Options{
 				Host:             host,
 				Port:             port,
 				ManualApprove:    manualApprove,
 				RateLimitSeconds: rateLimitSeconds,
 				RateLimitWait:    rateLimitWait,
-			})
+			}, endpoints)
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 			go func() {
 				<-sigCh
+				cancelApp()
 				slog.Info("shutting down (30s timeout for in-flight requests)...")
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

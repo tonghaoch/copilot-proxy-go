@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 )
 
 var (
@@ -16,6 +14,10 @@ var (
 
 // translateToResponses converts an Anthropic request to a Responses API payload.
 func translateToResponses(req *AnthropicRequest, extraPrompt string) (*ResponsesPayload, error) {
+	return translateToResponsesWithEffort(req, extraPrompt, defaultRuntimeConfig{}.ReasoningEffort(normalizeModelName(req.Model)))
+}
+
+func translateToResponsesWithEffort(req *AnthropicRequest, extraPrompt, effort string) (*ResponsesPayload, error) {
 	model := normalizeModelName(req.Model)
 
 	// Build input items from messages
@@ -41,7 +43,7 @@ func translateToResponses(req *AnthropicRequest, extraPrompt string) (*Responses
 
 	// Reasoning config from config system
 	reasoning := &ResponsesReasoning{
-		Effort:  config.GetReasoningEffort(model),
+		Effort:  effort,
 		Summary: "detailed",
 	}
 

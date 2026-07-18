@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
-
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 )
 
 const compactPrefix = "You are a helpful AI assistant tasked with summarizing conversations"
@@ -27,14 +25,14 @@ func isWarmupRequest(req *AnthropicRequest, betaHeader string) bool {
 // applySmallModelIfNeeded checks for compact/warmup requests and routes them
 // to the configured small model to save premium quota.
 // Returns true if the model was changed.
-func applySmallModelIfNeeded(req *AnthropicRequest, betaHeader string) bool {
-	cfg := config.Get()
+func applySmallModelIfNeeded(req *AnthropicRequest, betaHeader string, cfg RuntimeConfig) bool {
+	snapshot := cfg.Snapshot()
 	// Tolerate dash-format Claude IDs in config (e.g. claude-haiku-4-5) by
 	// running the override through the same resolver as request entries —
 	// otherwise the override would set a model name FindModel can't match.
-	smallModel := ResolveCopilotModel(cfg.SmallModel)
+	smallModel := ResolveCopilotModel(snapshot.SmallModel)
 
-	if cfg.CompactUseSmallModel && isCompactRequest(req) {
+	if snapshot.CompactUseSmallModel && isCompactRequest(req) {
 		req.Model = smallModel
 		return true
 	}

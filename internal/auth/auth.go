@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,10 @@ import (
 // SetupAuth orchestrates token loading, device authentication, Copilot token
 // exchange, and background refresh.
 func SetupAuth(providedToken string) error {
+	return SetupAuthContext(context.Background(), providedToken)
+}
+
+func SetupAuthContext(ctx context.Context, providedToken string) error {
 	if err := state.EnsurePaths(); err != nil {
 		return fmt.Errorf("ensuring paths: %w", err)
 	}
@@ -46,7 +51,7 @@ func SetupAuth(providedToken string) error {
 	if state.Global.GetShowToken() {
 		slog.Info("Copilot token", "token", copilotToken.Token)
 	}
-	StartTokenRefresh(copilotToken.ExpiresAt, copilotToken.RefreshIn)
+	StartTokenRefreshContext(ctx, copilotToken.ExpiresAt, copilotToken.RefreshIn)
 	return nil
 }
 

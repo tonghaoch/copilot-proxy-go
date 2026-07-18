@@ -34,6 +34,7 @@ func NewWithHandler(opts Options, endpoints *handler.Handler) *http.Server {
 
 	// Core middleware
 	r.Use(chimw.RequestID)
+	r.Use(requestIDHeader)
 	r.Use(requestLogger)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -94,12 +95,24 @@ func NewWithHandler(opts Options, endpoints *handler.Handler) *http.Server {
 	addr := fmt.Sprintf("%s:%d", host, opts.Port)
 
 	return &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  5 * time.Minute,
-		WriteTimeout: 10 * time.Minute,
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		// Streaming responses may legitimately outlive a fixed write deadline.
+		// Shutdown still bounds server termination at the application layer.
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
+}
+
+func requestIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requestID := chimw.GetReqID(r.Context()); requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requestLogger is a simple request logging middleware.
@@ -108,7 +121,13 @@ func requestLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.Info(fmt.Sprintf("%s %s %d %s",
-			r.Method, r.URL.Path, ww.Status(), time.Since(start).Round(time.Millisecond)))
+		slog.Info("request completed",
+			"request_id", chimw.GetReqID(r.Context()),
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", ww.Status(),
+			"bytes", ww.BytesWritten(),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 	})
 }

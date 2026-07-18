@@ -12,14 +12,15 @@ type AnthropicAdapter interface {
 
 type defaultAnthropicAdapter struct {
 	models ModelStore
+	config RuntimeConfig
 }
 
 func (a defaultAnthropicAdapter) ToChat(req *AnthropicRequest, extraPrompt string) (*ChatCompletionRequest, error) {
 	return translateToOpenAIWithModels(req, extraPrompt, a.models)
 }
 
-func (defaultAnthropicAdapter) ToResponses(req *AnthropicRequest, extraPrompt string) (*ResponsesPayload, error) {
-	return translateToResponses(req, extraPrompt)
+func (a defaultAnthropicAdapter) ToResponses(req *AnthropicRequest, extraPrompt string) (*ResponsesPayload, error) {
+	return translateToResponsesWithEffort(req, extraPrompt, a.config.ReasoningEffort(normalizeModelName(req.Model)))
 }
 
 func (defaultAnthropicAdapter) FromChat(resp *ChatCompletionResponse) *AnthropicResponse {

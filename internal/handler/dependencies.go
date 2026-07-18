@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -52,6 +53,23 @@ type StreamDecoder interface {
 	Read(io.Reader, func(eventType, data string) error) error
 }
 
+// RuntimeConfig supplies immutable snapshots of request-time configuration.
+type RuntimeConfig interface {
+	Snapshot() *config.Config
+	APIKeys() []string
+	ExtraPrompt(string) string
+	ReasoningEffort(string) string
+}
+
+type defaultRuntimeConfig struct{}
+
+func (defaultRuntimeConfig) Snapshot() *config.Config        { return config.Get() }
+func (defaultRuntimeConfig) APIKeys() []string               { return config.GetAPIKeys() }
+func (defaultRuntimeConfig) ExtraPrompt(model string) string { return config.GetExtraPrompt(model) }
+func (defaultRuntimeConfig) ReasoningEffort(model string) string {
+	return config.GetReasoningEffort(model)
+}
+
 type defaultStreamDecoder struct{}
 
 func (defaultStreamDecoder) Read(body io.Reader, consume func(string, string) error) error {
@@ -72,6 +90,7 @@ type Dependencies struct {
 	HTTP      HTTPDoer
 	Anthropic AnthropicAdapter
 	Streams   StreamDecoder
+	Config    RuntimeConfig
 }
 
 // Handler is the HTTP adapter for all public proxy endpoints.
@@ -82,6 +101,7 @@ type Handler struct {
 	http      HTTPDoer
 	anthropic AnthropicAdapter
 	streams   StreamDecoder
+	config    RuntimeConfig
 }
 
 func New(deps Dependencies) *Handler {
@@ -97,15 +117,18 @@ func New(deps Dependencies) *Handler {
 	if deps.HTTP == nil {
 		deps.HTTP = defaultHTTPDoer{}
 	}
-	if deps.Anthropic == nil {
-		deps.Anthropic = defaultAnthropicAdapter{models: deps.State}
-	}
 	if deps.Streams == nil {
 		deps.Streams = defaultStreamDecoder{}
 	}
+	if deps.Config == nil {
+		deps.Config = defaultRuntimeConfig{}
+	}
+	if deps.Anthropic == nil {
+		deps.Anthropic = defaultAnthropicAdapter{models: deps.State, config: deps.Config}
+	}
 	return &Handler{
 		state: deps.State, metrics: deps.Metrics, copilot: deps.Copilot,
-		http: deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams,
+		http: deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
 	}
 }
 

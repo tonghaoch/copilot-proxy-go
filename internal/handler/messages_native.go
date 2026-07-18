@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -38,7 +37,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
 	// Copilot rejects it.
-	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state)
+	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state, h.config)
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -104,6 +103,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 			flusher.Flush()
 			return nil
 		}); err != nil {
+			rec.Error = err.Error()
 			slog.Error("native messages streaming error", "error", err)
 		}
 	} else {
@@ -194,7 +194,7 @@ func filterThinkingBlocksInMap(payload map[string]any, req *AnthropicRequest) {
 // in the map representation. Only applies when the model supports adaptive
 // thinking. Returns the effort actually written to payload (after consulting
 // the session effort cache); "" when no effort was set.
-func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, models ModelStore) string {
+func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, models ModelStore, cfg RuntimeConfig) string {
 	model := models.FindModel(req.Model)
 	if model == nil || !model.Capabilities.Supports.AdaptiveThinking {
 		return ""
@@ -207,7 +207,7 @@ func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, m
 	// this model. If Copilot has previously rejected our requested effort for
 	// this model in the current session, clampEffort downgrades to the
 	// closest supported value.
-	requested := mapEffort(config.GetReasoningEffort(normalizeModelName(req.Model)))
+	requested := mapEffort(cfg.ReasoningEffort(normalizeModelName(req.Model)))
 	if requested == "" {
 		return ""
 	}

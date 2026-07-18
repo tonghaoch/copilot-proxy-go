@@ -8,6 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/auth"
@@ -25,19 +28,51 @@ type HTTPDoer interface {
 type Client struct {
 	httpClient   func() HTTPDoer
 	refreshToken func() error
+	buildHeaders func() http.Header
+	buildURL     func(string) string
+	retry        RetryPolicy
+}
+
+type RetryPolicy struct {
+	MaxAttempts int
+	BaseDelay   time.Duration
+	MaxDelay    time.Duration
+	Wait        func(context.Context, time.Duration) error
+}
+
+type ClientOptions struct {
+	HTTPClient   HTTPDoer
+	RefreshToken func() error
+	BuildHeaders func() http.Header
+	BuildURL     func(string) string
+	Retry        RetryPolicy
 }
 
 // NewClient creates an independently testable Copilot client.
 func NewClient(httpClient HTTPDoer, refreshToken func() error) *Client {
+	return NewClientWithOptions(ClientOptions{HTTPClient: httpClient, RefreshToken: refreshToken})
+}
+
+func NewClientWithOptions(opts ClientOptions) *Client {
+	if opts.BuildHeaders == nil {
+		opts.BuildHeaders = api.BuildCopilotHeadersFromState
+	}
+	if opts.BuildURL == nil {
+		opts.BuildURL = api.CopilotURL
+	}
+	opts.Retry = normalizeRetryPolicy(opts.Retry)
 	return &Client{
-		httpClient:   func() HTTPDoer { return httpClient },
-		refreshToken: refreshToken,
+		httpClient: func() HTTPDoer { return opts.HTTPClient }, refreshToken: opts.RefreshToken,
+		buildHeaders: opts.BuildHeaders, buildURL: opts.BuildURL, retry: opts.Retry,
 	}
 }
 
 var defaultClient = &Client{
 	httpClient:   func() HTTPDoer { return api.HTTPClient() },
 	refreshToken: auth.RefreshCopilotTokenNow,
+	buildHeaders: api.BuildCopilotHeadersFromState,
+	buildURL:     api.CopilotURL,
+	retry:        normalizeRetryPolicy(RetryPolicy{}),
 }
 
 // DefaultClient returns the process-wide Copilot client used by the CLI.
@@ -133,45 +168,109 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 		if body != nil {
 			reader = bytes.NewReader(body)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, api.CopilotURL(path), reader)
+		req, err := http.NewRequestWithContext(ctx, method, c.buildURL(path), reader)
 		if err != nil {
 			return nil, err
 		}
-		req.Header = api.BuildCopilotHeadersFromState()
+		req.Header = c.buildHeaders()
 		if configure != nil {
 			configure(req.Header)
 		}
 		return req, nil
 	}
 
-	for attempt := 0; attempt < 2; attempt++ {
+	refreshedToken := false
+	for attempt := 0; attempt < c.retry.MaxAttempts; attempt++ {
 		req, err := buildRequest()
 		if err != nil {
 			return nil, fmt.Errorf("creating upstream request: %w", err)
 		}
+		started := time.Now()
 		resp, err := c.httpClient().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("sending upstream request: %w", err)
 		}
-		if !isTokenExpired(resp.StatusCode) || attempt == 1 {
-			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-				err := api.NewHTTPError(resp)
-				resp.Body.Close()
-				return nil, err
-			}
+		slog.Debug("upstream response", "method", method, "path", path, "status", resp.StatusCode,
+			"attempt", attempt+1, "latency", time.Since(started).Round(time.Millisecond),
+			"request_id", resp.Header.Get("X-Request-ID"))
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 			return resp, nil
 		}
-
+		if isTokenExpired(resp.StatusCode) && !refreshedToken {
+			drainAndClose(resp.Body)
+			refreshedToken = true
+			slog.Warn("upstream auth error; refreshing token", "path", path, "status", resp.StatusCode)
+			if c.refreshToken == nil {
+				return nil, fmt.Errorf("token refresh is not configured")
+			}
+			if err := c.refreshToken(); err != nil {
+				return nil, fmt.Errorf("token refresh failed: %w", err)
+			}
+			continue
+		}
+		if isRetryableStatus(resp.StatusCode) && attempt+1 < c.retry.MaxAttempts {
+			delay := retryDelay(resp, attempt, c.retry)
+			drainAndClose(resp.Body)
+			slog.Warn("retrying transient upstream response", "path", path, "status", resp.StatusCode,
+				"attempt", attempt+1, "delay", delay)
+			if err := c.retry.Wait(ctx, delay); err != nil {
+				return nil, fmt.Errorf("waiting to retry upstream request: %w", err)
+			}
+			continue
+		}
+		httpErr := api.NewHTTPError(resp)
 		resp.Body.Close()
-		slog.Warn("upstream request got auth error, refreshing token and retrying", "path", path, "status", resp.StatusCode)
-		if c.refreshToken == nil {
-			return nil, fmt.Errorf("token refresh is not configured")
-		}
-		if err := c.refreshToken(); err != nil {
-			return nil, fmt.Errorf("token refresh failed: %w", err)
-		}
+		return nil, httpErr
 	}
 	return nil, fmt.Errorf("upstream request retry exhausted")
+}
+
+func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
+	if policy.MaxAttempts <= 0 {
+		policy.MaxAttempts = 3
+	}
+	if policy.BaseDelay <= 0 {
+		policy.BaseDelay = 200 * time.Millisecond
+	}
+	if policy.MaxDelay <= 0 {
+		policy.MaxDelay = 5 * time.Second
+	}
+	if policy.Wait == nil {
+		policy.Wait = func(ctx context.Context, delay time.Duration) error {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		}
+	}
+	return policy
+}
+
+func isRetryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+func retryDelay(resp *http.Response, attempt int, policy RetryPolicy) time.Duration {
+	if value := strings.TrimSpace(resp.Header.Get("Retry-After")); value != "" {
+		if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+			return min(time.Duration(seconds)*time.Second, policy.MaxDelay)
+		}
+		if when, err := http.ParseTime(value); err == nil {
+			return min(max(time.Until(when), 0), policy.MaxDelay)
+		}
+	}
+	delay := policy.BaseDelay << attempt
+	return min(delay, policy.MaxDelay)
+}
+
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64<<10))
+	_ = body.Close()
 }
 
 // ChatCompletionPayload contains the fields we need to inspect/modify

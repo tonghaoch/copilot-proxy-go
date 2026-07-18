@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -62,8 +61,8 @@ func Stats(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 	snap := h.metrics.Snapshot()
-	cfg := config.Get()
-	apiKeys := config.GetAPIKeys()
+	cfg := h.config.Snapshot()
+	apiKeys := h.config.APIKeys()
 
 	// Limit recent to last 50 for the API response
 	recent := snap.Recent

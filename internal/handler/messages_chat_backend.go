@@ -6,12 +6,11 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
-	ccReq, err := h.anthropic.ToChat(req, config.GetExtraPrompt(normalizeModelName(req.Model)))
+	ccReq, err := h.anthropic.ToChat(req, h.config.ExtraPrompt(normalizeModelName(req.Model)))
 	if err != nil {
 		api.ForwardError(w, err)
 		return
@@ -74,6 +73,7 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		}
 		return nil
 	}); err != nil {
+		rec.Error = err.Error()
 		slog.Error("streaming error", "error", err)
 		writeSSEError(w, flusher, err.Error())
 	}

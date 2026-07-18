@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 )
 
 // TokenResponse is the JSON response for the token endpoint.
@@ -21,7 +19,7 @@ func Token(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
 	// When authentication is intentionally disabled, keep this sensitive
 	// endpoint local-only. Other API endpoints can still be exposed explicitly.
-	if len(config.GetAPIKeys()) == 0 && !isLoopbackRemote(r.RemoteAddr) {
+	if len(h.config.APIKeys()) == 0 && !isLoopbackRemote(r.RemoteAddr) {
 		http.Error(w, `{"error":{"message":"token endpoint is local-only without API authentication","type":"forbidden"}}`, http.StatusForbidden)
 		return
 	}

@@ -71,8 +71,12 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 }
 
 func normalizeEmbeddingsResponse(body io.Reader, model string) (map[string]json.RawMessage, int64, error) {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return nil, 0, err
+	}
 	var result map[string]json.RawMessage
-	if err := json.NewDecoder(body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, 0, err
 	}
 	if _, ok := result["object"]; !ok {

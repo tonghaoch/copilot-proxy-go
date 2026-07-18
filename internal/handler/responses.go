@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
 )
 
@@ -53,7 +52,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tools, ok := payload["tools"].([]any); ok {
-		if config.Get().UseFunctionApplyPatch {
+		if h.config.Snapshot().UseFunctionApplyPatch {
 			payload["tools"] = convertApplyPatchTools(tools)
 			tools = payload["tools"].([]any)
 		}

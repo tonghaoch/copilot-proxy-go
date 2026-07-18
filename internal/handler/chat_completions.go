@@ -113,6 +113,7 @@ func streamSSE(w http.ResponseWriter, body io.Reader, rec *state.RequestRecord) 
 	}
 
 	if err := scanner.Err(); err != nil {
+		rec.Error = err.Error()
 		slog.Error("SSE stream error", "error", err)
 	}
 }
