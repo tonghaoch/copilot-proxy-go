@@ -60,7 +60,7 @@ internal/
     messages_session.go              # Session snapshot construction
     session_extract.go               # CLAUDE.md extraction from system prompts
     message_inspect.go               # Model checks, vision detection, stop-reason mapping
-    sse.go, http_helpers.go          # SSE framing, body decoding, streaming helpers
+    sse.go, http_helpers.go          # SSE framing (unbounded line reader), body decoding
     effort_cache.go                  # Per-session cache of model-supported reasoning efforts
     model_alias.go                   # Claude Code <-> Copilot model ID translation
     anthropic_adapter.go             # Protocol conversion behind an interface
@@ -88,7 +88,7 @@ internal/
     ratelimit.go                     # Rate limiting (reject or wait mode)
     approval.go                      # Manual CLI approval per request
   server/server.go                   # chi router setup, all routes, middleware chain
-  service/copilot.go                 # Copilot API proxy functions (all backend HTTP calls)
+  service/copilot.go                 # Copilot API proxy functions (all backend HTTP calls, retry policy)
   shell/
     shell.go                         # Shell detection, export script generation
     clipboard.go                     # Cross-platform clipboard
@@ -176,11 +176,14 @@ GitHub token: `~/.local/share/copilot-proxy-go/github_token`
 - **Session intelligence**: Extracts CLAUDE.md files, tool inventory, thinking config, beta features, and subagent info from each Messages request system prompt
 - **Thread-safe global state**: `state.Global` singleton with `sync.RWMutex`
 - **Token auto-refresh**: Background goroutine refreshes Copilot token 2 minutes before `expires_at`; request-level retry on 401/403 with immediate token refresh and thundering herd protection
+- **Upstream retry**: Transport errors (dropped connections — the most common failure) are retried, since the request body is rebuilt from a byte slice each attempt; a cancelled context is not, because the caller is gone. `Retry-After` is honoured in full rather than clamped, and a 429 asking for longer than `MaxRetryAfter` is returned to the client instead of retried, so the wait does not spend another premium request on a certain second 429
 - **Localhost by default**: Server binds to `127.0.0.1` (not `0.0.0.0`); use `--host 0.0.0.0` for network access
 - **Graceful shutdown**: SIGINT/SIGTERM triggers `srv.Shutdown()` with 30s timeout for in-flight requests
 - **Request body limits**: All endpoints enforce 100 MB max request body via `http.MaxBytesReader`
 - **Three-tier backend routing**: Native Messages > Responses > Chat Completions (based on model's `supported_endpoints`)
 - **Format translation**: Full bidirectional Anthropic ↔ OpenAI translation including streaming SSE
+- **SSE framing has no line-length ceiling**: `readSSELines` reads with `bufio.Reader`, not `bufio.Scanner`. A single event routinely exceeds a megabyte (a large `apply_patch` argument blob, or `response.completed` carrying the full response object), and Scanner aborts the entire stream on those, leaving the client hanging mid-message
+- **Every stream must terminate**: `AnthropicStreamState.Finish` emits `content_block_stop`/`message_delta`/`message_stop` when upstream stops before `finish_reason`; without it the client waits forever. `IsComplete` guards against emitting them twice. The Responses path has the equivalent check
 - **Thinking/reasoning blocks**: Maps between Claude extended thinking and OpenAI reasoning formats (with signatures)
 - **Reasoning effort precedence**: `thinking.type=="disabled"` → `output_config.effort` → `thinking.budget_tokens` → config default. Modern Claude Code (2.1.x, beta `effort-2025-11-24`) sends `thinking:{type:"adaptive"}` plus `output_config.effort` and never sends `budget_tokens`, so `/effort` maps straight through; the budget branch serves older clients and direct SDK callers. Note `/effort max` is downgraded to `high` by Claude Code itself before it reaches the proxy
 - **Effort vocabularies differ per backend**: native Messages accepts `[low medium high xhigh max]`; the Responses endpoint rejects `max` and (on gpt-5.3-codex) `minimal`, so client values are remapped in `anthropicEffortToResponses`. Copilot's 400 body lists supported values **space-separated** — parsing it with the wrong separator poisons `effort_cache` and bricks the model for the process
