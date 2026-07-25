@@ -37,7 +37,9 @@ type RetryPolicy struct {
 	MaxAttempts int
 	BaseDelay   time.Duration
 	MaxDelay    time.Duration
-	Wait        func(context.Context, time.Duration) error
+	// MaxRetryAfter bounds how long a Retry-After is worth waiting out.
+	MaxRetryAfter time.Duration
+	Wait          func(context.Context, time.Duration) error
 }
 
 type ClientOptions struct {
@@ -188,7 +190,18 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 		started := time.Now()
 		resp, err := c.httpClient().Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("sending upstream request: %w", err)
+			// Dropped connections are replayable (the body is rebuilt each
+			// attempt); a cancelled context is not — the caller is gone.
+			if ctx.Err() != nil || attempt+1 >= c.retry.MaxAttempts {
+				return nil, fmt.Errorf("sending upstream request: %w", err)
+			}
+			delay := min(c.retry.BaseDelay<<attempt, c.retry.MaxDelay)
+			slog.Warn("retrying upstream transport error", "path", path, "attempt", attempt+1,
+				"delay", delay, "error", err)
+			if waitErr := c.retry.Wait(ctx, delay); waitErr != nil {
+				return nil, fmt.Errorf("waiting to retry upstream request: %w", waitErr)
+			}
+			continue
 		}
 		slog.Debug("upstream response", "method", method, "path", path, "status", resp.StatusCode,
 			"attempt", attempt+1, "latency", time.Since(started).Round(time.Millisecond),
@@ -210,6 +223,14 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 		}
 		if isRetryableStatus(resp.StatusCode) && attempt+1 < c.retry.MaxAttempts {
 			delay := retryDelay(resp, attempt, c.retry)
+			// Retrying inside the window spends a premium request on another 429.
+			if resp.StatusCode == http.StatusTooManyRequests && delay > c.retry.MaxRetryAfter {
+				httpErr := api.NewHTTPError(resp)
+				resp.Body.Close()
+				slog.Warn("rate limited beyond retry window; returning to caller",
+					"path", path, "retry_after", delay)
+				return nil, httpErr
+			}
 			drainAndClose(resp.Body)
 			slog.Warn("retrying transient upstream response", "path", path, "status", resp.StatusCode,
 				"attempt", attempt+1, "delay", delay)
@@ -235,6 +256,9 @@ func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
 	if policy.MaxDelay <= 0 {
 		policy.MaxDelay = 5 * time.Second
 	}
+	if policy.MaxRetryAfter <= 0 {
+		policy.MaxRetryAfter = 10 * time.Second
+	}
 	if policy.Wait == nil {
 		policy.Wait = func(ctx context.Context, delay time.Duration) error {
 			timer := time.NewTimer(delay)
@@ -255,13 +279,15 @@ func isRetryableStatus(status int) bool {
 		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
+// retryDelay honours Retry-After when present, else exponential backoff. It is
+// returned unclamped; clamping would retry while the window is still open.
 func retryDelay(resp *http.Response, attempt int, policy RetryPolicy) time.Duration {
 	if value := strings.TrimSpace(resp.Header.Get("Retry-After")); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-			return min(time.Duration(seconds)*time.Second, policy.MaxDelay)
+			return time.Duration(seconds) * time.Second
 		}
 		if when, err := http.ParseTime(value); err == nil {
-			return min(max(time.Until(when), 0), policy.MaxDelay)
+			return max(time.Until(when), 0)
 		}
 	}
 	delay := policy.BaseDelay << attempt
