@@ -40,7 +40,7 @@ Go version: 1.25 (per go.mod)
 go test -v ./...
 ```
 
-Note: Coverage is concentrated in `internal/handler` (protocol translation, quota routing, effort resolution, stream state machines). `middleware`, `auth`, and `logger` have no tests. CI runs build + test.
+Note: Coverage is concentrated in `internal/handler` (protocol translation, quota routing, effort resolution, stream state machines) and `internal/service` (upstream retry). `middleware`, `auth`, and `logger` have no tests. CI runs build + test.
 
 ## Project Structure
 
@@ -83,10 +83,7 @@ internal/
     dashboard.go, dashboard.html     # Embedded HTML dashboard (go:embed)
     embeddings.go                    # POST /embeddings passthrough
   logger/logger.go                   # Per-handler file logging with daily rotation (7-day retention)
-  middleware/
-    auth.go                          # API key auth (x-api-key / Bearer)
-    ratelimit.go                     # Rate limiting (reject or wait mode)
-    approval.go                      # Manual CLI approval per request
+  middleware/auth.go                 # API key auth (x-api-key / Bearer)
   server/server.go                   # chi router setup, all routes, middleware chain
   service/copilot.go                 # Copilot API proxy functions (all backend HTTP calls, retry policy)
   shell/
@@ -130,7 +127,7 @@ POST /embeddings, /v1/embeddings    → Embeddings
 
 ### Middleware Chain
 
-RequestID → requestIDHeader → requestLogger → CORS → Recoverer → Auth → [RateLimit] → [ManualApproval]
+RequestID → requestIDHeader → requestLogger → CORS → Recoverer → Auth
 
 ## Key Dependencies
 
@@ -152,9 +149,6 @@ RequestID → requestIDHeader → requestLogger → CORS → Recoverer → Auth 
 | `-c, --claude-code` | false | Interactive Claude Code model selection |
 | `--codex` | false | Interactive Codex CLI model selection |
 | `-v, --verbose` | false | Debug logging |
-| `-r, --rate-limit` | 0 | Min seconds between requests |
-| `-w, --wait` | false | Wait instead of rejecting rate-limited requests |
-| `--manual` | false | Require CLI approval per request |
 | `--proxy-env` | false | Use HTTP proxy from env vars |
 | `--show-token` | false | Print tokens to console |
 

@@ -16,11 +16,8 @@ import (
 
 // Options configures the server behavior.
 type Options struct {
-	Host             string
-	Port             int
-	ManualApprove    bool
-	RateLimitSeconds int
-	RateLimitWait    bool
+	Host string
+	Port int
 }
 
 // New creates a new HTTP server with all routes and middleware configured.
@@ -47,19 +44,6 @@ func NewWithHandler(opts Options, endpoints *handler.Handler) *http.Server {
 
 	// API key authentication
 	r.Use(middleware.Auth)
-
-	// Rate limiting (if configured)
-	if opts.RateLimitSeconds > 0 {
-		rl := middleware.NewRateLimiter(opts.RateLimitSeconds, opts.RateLimitWait)
-		r.Use(rl.Middleware)
-		slog.Info(fmt.Sprintf("rate limiting enabled: %ds (wait=%v)", opts.RateLimitSeconds, opts.RateLimitWait))
-	}
-
-	// Manual approval (if enabled)
-	if opts.ManualApprove {
-		r.Use(middleware.ManualApproval)
-		slog.Info("manual approval enabled")
-	}
 
 	// Routes
 	r.Get("/", endpoints.Health)

@@ -153,17 +153,15 @@ codex \
 copilot-proxy-go start [flags]
 
 Flags:
-  -p, --port int              port to listen on (default 4141)
-  -g, --github-token string   GitHub OAuth token (skips device code flow)
   -a, --account-type string   individual, business, or enterprise (default "individual")
   -c, --claude-code           interactive model selection for Claude Code
       --codex                 interactive model selection for Codex CLI
-  -v, --verbose               enable verbose/debug logging
-  -r, --rate-limit int        minimum seconds between requests (0 = disabled)
-  -w, --wait                  wait instead of rejecting on rate limit
-      --manual                require manual CLI approval for each request
+  -g, --github-token string   GitHub OAuth token (skips device code flow)
+      --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
+  -p, --port int              port to listen on (default 4141)
       --proxy-env             enable HTTP proxy from env vars (http_proxy/https_proxy/all_proxy)
       --show-token            print tokens to console
+  -v, --verbose               enable verbose/debug logging
 ```
 
 ### `auth` — Authenticate with GitHub

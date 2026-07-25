@@ -24,18 +24,15 @@ import (
 
 func startCmd() *cobra.Command {
 	var (
-		host             string
-		port             int
-		githubToken      string
-		accountType      string
-		showToken        bool
-		verbose          bool
-		manualApprove    bool
-		rateLimitSeconds int
-		rateLimitWait    bool
-		claudeCode       bool
-		codex            bool
-		proxyEnv         bool
+		host        string
+		port        int
+		githubToken string
+		accountType string
+		showToken   bool
+		verbose     bool
+		claudeCode  bool
+		codex       bool
+		proxyEnv    bool
 	)
 
 	cmd := &cobra.Command{
@@ -119,11 +116,8 @@ func startCmd() *cobra.Command {
 				State: state.Global, Metrics: state.Metrics, Copilot: copilotClient, HTTP: api.HTTPClient(),
 			})
 			srv := server.NewWithHandler(server.Options{
-				Host:             host,
-				Port:             port,
-				ManualApprove:    manualApprove,
-				RateLimitSeconds: rateLimitSeconds,
-				RateLimitWait:    rateLimitWait,
+				Host: host,
+				Port: port,
 			}, endpoints)
 
 			sigCh := make(chan os.Signal, 1)
@@ -152,9 +146,6 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&accountType, "account-type", "a", "individual", "Copilot account type: individual, business, enterprise")
 	cmd.Flags().BoolVar(&showToken, "show-token", false, "print tokens to console")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
-	cmd.Flags().BoolVar(&manualApprove, "manual", false, "require manual CLI approval for each request")
-	cmd.Flags().IntVarP(&rateLimitSeconds, "rate-limit", "r", 0, "minimum seconds between requests (0 = disabled)")
-	cmd.Flags().BoolVarP(&rateLimitWait, "wait", "w", false, "wait instead of rejecting on rate limit")
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
