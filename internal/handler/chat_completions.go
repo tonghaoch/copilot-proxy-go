@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -93,26 +92,23 @@ func streamSSE(w http.ResponseWriter, body io.Reader, rec *state.RequestRecord) 
 		return
 	}
 
-	scanner := bufio.NewScanner(body)
-	// Increase buffer size for large SSE events
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
+	err = readSSELines(body, func(line string) error {
 		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
 			var chunk ChatCompletionChunk
 			if json.Unmarshal([]byte(data), &chunk) == nil {
 				captureChatUsage(rec, chunk.Usage)
 			}
 		}
-		fmt.Fprintf(w, "%s\n", line)
+		if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+			return err
+		}
 		// Flush after empty lines (SSE event boundary)
 		if line == "" {
 			flusher.Flush()
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		rec.Error = err.Error()
 		slog.Error("SSE stream error", "error", err)
 	}

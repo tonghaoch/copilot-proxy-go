@@ -61,7 +61,7 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		return
 	}
 	streamState := NewAnthropicStreamState(model)
-	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
+	streamErr := h.streams.Read(resp.Body, func(eventType, data string) error {
 		var chunk ChatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return err
@@ -72,10 +72,19 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 			}
 		}
 		return nil
-	}); err != nil {
-		rec.Error = err.Error()
-		slog.Error("streaming error", "error", err)
-		writeSSEError(w, flusher, err.Error())
+	})
+	if streamErr != nil {
+		rec.Error = streamErr.Error()
+		slog.Error("streaming error", "error", streamErr)
+		writeSSEError(w, flusher, streamErr.Error())
+	}
+	// Upstream can stop before finish_reason; end the message ourselves.
+	if !streamState.IsComplete() {
+		for _, event := range streamState.Finish("end_turn") {
+			if err := writeSSE(w, flusher, event.Event, event.Data); err != nil {
+				break
+			}
+		}
 	}
 	input, output, cached := streamState.TokenCounts()
 	rec.InputTokens, rec.OutputTokens, rec.CachedTokens = int64(input), int64(output), int64(cached)

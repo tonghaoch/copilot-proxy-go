@@ -19,6 +19,7 @@ type AnthropicStreamState struct {
 	openBlockType string      // "text", "tool_use", "thinking", ""
 	toolCallMap   map[int]int // OpenAI tool call index -> Anthropic block index
 	hasStarted    bool
+	completed     bool
 	model         string
 	inputTokens   int
 	outputTokens  int
@@ -226,32 +227,45 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 
 	// Handle finish_reason
 	if choice.FinishReason != nil {
-		events = append(events, s.closeCurrentBlock()...)
-
-		stopReason := mapStopReason(*choice.FinishReason)
-
-		// Update usage from final chunk
 		s.captureUsage(chunk.Usage)
-
-		events = append(events, SSEEvent{
-			Event: "message_delta",
-			Data: MessageDeltaEvent{
-				Type: "message_delta",
-				Delta: MessageDelta{
-					StopReason: stopReason,
-				},
-				Usage: DeltaUsage{
-					OutputTokens: s.outputTokens,
-				},
-			},
-		})
-		events = append(events, SSEEvent{
-			Event: "message_stop",
-			Data:  MessageStopEvent{Type: "message_stop"},
-		})
+		events = append(events, s.finish(mapStopReason(*choice.FinishReason))...)
 	}
 
 	return events
+}
+
+// IsComplete reports whether the stream reached a finish_reason.
+func (s *AnthropicStreamState) IsComplete() bool { return s.completed }
+
+// Finish closes any open block and ends the message. Callers use it when the
+// stream stopped without a finish_reason; without it the client waits forever.
+func (s *AnthropicStreamState) Finish(stopReason string) []SSEEvent {
+	if s.completed {
+		return nil
+	}
+	return s.finish(stopReason)
+}
+
+func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
+	s.completed = true
+	events := s.closeCurrentBlock()
+	if !s.hasStarted {
+		s.hasStarted = true
+		events = append(events, SSEEvent{
+			Event: "message_start",
+			Data: MessageStartEvent{Type: "message_start", Message: AnthropicResponse{
+				Type: "message", Role: "assistant", Model: s.model,
+			}},
+		})
+	}
+	return append(events,
+		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
+			Type:  "message_delta",
+			Delta: MessageDelta{StopReason: stopReason},
+			Usage: DeltaUsage{OutputTokens: s.outputTokens},
+		}},
+		SSEEvent{Event: "message_stop", Data: MessageStopEvent{Type: "message_stop"}},
+	)
 }
 
 // captureUsage updates the metrics counters from any chunk carrying usage.
