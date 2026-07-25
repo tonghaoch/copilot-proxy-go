@@ -10,6 +10,7 @@ type ResponsesPayload struct {
 	Instructions      string              `json:"instructions,omitempty"`
 	MaxOutputTokens   int                 `json:"max_output_tokens,omitempty"`
 	Temperature       *float64            `json:"temperature,omitempty"`
+	TopP              *float64            `json:"top_p,omitempty"`
 	Tools             []any               `json:"tools,omitempty"`
 	ToolChoice        any                 `json:"tool_choice,omitempty"`
 	Reasoning         *ResponsesReasoning `json:"reasoning,omitempty"`

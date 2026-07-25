@@ -11,15 +11,18 @@ import (
 // effortRank lists Anthropic output_config.effort values from strongest to
 // weakest. Used to pick the closest supported effort when the requested one
 // is rejected by Copilot's upstream.
-var effortRank = []string{"max", "high", "medium", "low", "minimal"}
+var effortRank = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"}
 
 // effortErrRe parses Copilot's effort-rejection error message. Example:
 //
-//	output_config.effort "high" is not supported by model claude-opus-4.8; supported values: [medium]
+//	output_config.effort "high" is not supported by model claude-opus-4.8; supported values: [low medium high xhigh max]
 //
-// Capture groups: requested effort, model ID, comma-separated supported list.
+// Capture groups: requested effort, model ID, supported list.
 var effortErrRe = regexp.MustCompile(
 	`output_config\.effort\s+"([^"]+)"\s+is not supported by model\s+([^;]+);\s*supported values:\s*\[([^\]]+)\]`)
+
+// Copilot separates the supported-values list with spaces, not commas.
+func effortListSeparators(r rune) bool { return r == ',' || r == ' ' }
 
 // effortSupportCache holds the per-session record of which efforts a given
 // model accepts. Populated lazily from Copilot 400 responses; cleared on
@@ -88,12 +91,21 @@ func matchEffortError(s string) (model string, supported []string) {
 		return "", nil
 	}
 	model = strings.TrimSpace(m[2])
-	for _, part := range strings.Split(m[3], ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			supported = append(supported, p)
+	for _, part := range strings.FieldsFunc(m[3], effortListSeparators) {
+		// An unrecognised value would be sent back as an effort, re-poisoning the cache.
+		if isKnownEffort(part) {
+			supported = append(supported, part)
 		}
 	}
+	if len(supported) == 0 {
+		return "", nil
+	}
 	return model, supported
+}
+
+// isKnownEffort reports whether a value is one of the efforts we can send.
+func isKnownEffort(effort string) bool {
+	return slices.Contains(effortRank, effort)
 }
 
 // pickClosestEffort picks the supported effort closest to the requested one.

@@ -20,7 +20,8 @@ func (a defaultAnthropicAdapter) ToChat(req *AnthropicRequest, extraPrompt strin
 }
 
 func (a defaultAnthropicAdapter) ToResponses(req *AnthropicRequest, extraPrompt string) (*ResponsesPayload, error) {
-	return translateToResponsesWithEffort(req, extraPrompt, a.config.ReasoningEffort(normalizeModelName(req.Model)))
+	effort := resolveResponsesEffort(req, a.config.ReasoningEffort(normalizeModelName(req.Model)))
+	return translateToResponsesWithModels(req, extraPrompt, effort, a.models)
 }
 
 func (defaultAnthropicAdapter) FromChat(resp *ChatCompletionResponse) *AnthropicResponse {

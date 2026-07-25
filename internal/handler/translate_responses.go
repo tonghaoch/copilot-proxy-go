@@ -5,7 +5,68 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
+
+// resolveResponsesEffort picks the effort, using the native path's precedence.
+func resolveResponsesEffort(req *AnthropicRequest, configured string) string {
+	// Responses always sends a reasoning block, so disabling means asking for "none".
+	if req.Thinking != nil && req.Thinking.Type == "disabled" {
+		return "none"
+	}
+	if requested := clientRequestedEffort(req); requested != "" {
+		return anthropicEffortToResponses(requested)
+	}
+	return configured
+}
+
+// anthropicEffortToResponses maps a client effort onto one the endpoint accepts;
+// it rejects "max", and "minimal" on gpt-5.3-codex.
+func anthropicEffortToResponses(effort string) string {
+	switch effort {
+	case "max":
+		return "xhigh"
+	case "minimal":
+		return "low"
+	default:
+		return effort
+	}
+}
+
+// fallbackMaxOutputTokens applies only when the caller omitted max_tokens.
+const fallbackMaxOutputTokens = 12800
+
+// minResponsesOutputTokens is the smallest budget the endpoint accepts.
+const minResponsesOutputTokens = 16
+
+// resolveMaxOutputTokens honours max_tokens, bounded by endpoint and model limits.
+func resolveMaxOutputTokens(req *AnthropicRequest, models ModelStore) int {
+	maxOutput := req.MaxTokens
+	if maxOutput <= 0 {
+		maxOutput = fallbackMaxOutputTokens
+	}
+	if maxOutput < minResponsesOutputTokens {
+		maxOutput = minResponsesOutputTokens
+	}
+	if models != nil {
+		if model := models.FindModel(req.Model); model != nil {
+			if limit := model.Capabilities.Limits.MaxOutputTokens; limit > 0 && maxOutput > limit {
+				maxOutput = limit
+			}
+		}
+	}
+	return maxOutput
+}
+
+// resolveTemperature pins temperature to 1 for reasoning models, which require it.
+func resolveTemperature(req *AnthropicRequest, reasoning *ResponsesReasoning) *float64 {
+	if reasoning != nil && reasoning.Effort != "" {
+		one := float64(1)
+		return &one
+	}
+	return req.Temperature
+}
 
 var (
 	safetyIdentifierRe = regexp.MustCompile(`user_([^_]+)_account`)
@@ -14,10 +75,15 @@ var (
 
 // translateToResponses converts an Anthropic request to a Responses API payload.
 func translateToResponses(req *AnthropicRequest, extraPrompt string) (*ResponsesPayload, error) {
-	return translateToResponsesWithEffort(req, extraPrompt, defaultRuntimeConfig{}.ReasoningEffort(normalizeModelName(req.Model)))
+	configured := defaultRuntimeConfig{}.ReasoningEffort(normalizeModelName(req.Model))
+	return translateToResponsesWithEffort(req, extraPrompt, resolveResponsesEffort(req, configured))
 }
 
 func translateToResponsesWithEffort(req *AnthropicRequest, extraPrompt, effort string) (*ResponsesPayload, error) {
+	return translateToResponsesWithModels(req, extraPrompt, effort, state.Global)
+}
+
+func translateToResponsesWithModels(req *AnthropicRequest, extraPrompt, effort string, models ModelStore) (*ResponsesPayload, error) {
 	model := normalizeModelName(req.Model)
 
 	// Build input items from messages
@@ -32,14 +98,7 @@ func translateToResponsesWithEffort(req *AnthropicRequest, extraPrompt, effort s
 	// and appends extraPrompt to the first block before joining — matching TS)
 	instructions := parseSystemPromptForResponses(req.System, extraPrompt)
 
-	// Max output tokens (minimum 12800)
-	maxOutput := req.MaxTokens
-	if maxOutput < 12800 {
-		maxOutput = 12800
-	}
-
-	// Temperature forced to 1 for reasoning models
-	temp := float64(1)
+	maxOutput := resolveMaxOutputTokens(req, models)
 
 	// Reasoning config from config system
 	reasoning := &ResponsesReasoning{
@@ -55,7 +114,8 @@ func translateToResponsesWithEffort(req *AnthropicRequest, extraPrompt, effort s
 		Input:             input,
 		Instructions:      instructions,
 		MaxOutputTokens:   maxOutput,
-		Temperature:       &temp,
+		Temperature:       resolveTemperature(req, reasoning),
+		TopP:              req.TopP,
 		Reasoning:         reasoning,
 		Include:           []string{"reasoning.encrypted_content"},
 		Store:             &storeFalse,

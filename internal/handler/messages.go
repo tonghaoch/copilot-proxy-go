@@ -41,6 +41,8 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	if changed := applySmallModelIfNeeded(&req, betaHeader, h.config); changed {
 		slog.Info("routed to small model", "model", req.Model, "reason", "compact/warmup")
+		// Otherwise the substitution is invisible outside the server log.
+		ww.Header().Set("X-Copilot-Proxy-Routed-Model", req.Model)
 	}
 
 	subagent := detectSubagentMarker(req.Messages)

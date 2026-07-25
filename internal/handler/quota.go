@@ -17,9 +17,17 @@ func isCompactRequest(req *AnthropicRequest) bool {
 }
 
 // isWarmupRequest detects Claude Code warmup/probe requests.
-// These have an anthropic-beta header but no tools.
+//
+// A beta header and no tools also matches ordinary conversation, since Claude
+// Code always sends the header; real probes additionally want no output.
 func isWarmupRequest(req *AnthropicRequest, betaHeader string) bool {
-	return betaHeader != "" && len(req.Tools) == 0
+	if betaHeader == "" || len(req.Tools) > 0 {
+		return false
+	}
+	if req.MaxTokens > 0 && req.MaxTokens <= 1 {
+		return true
+	}
+	return len(req.Messages) == 1 && len(req.System) == 0
 }
 
 // applySmallModelIfNeeded checks for compact/warmup requests and routes them

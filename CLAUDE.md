@@ -40,7 +40,7 @@ Go version: 1.25 (per go.mod)
 go test -v ./...
 ```
 
-Note: Test files cover setup helpers. CI runs build + test.
+Note: Coverage is concentrated in `internal/handler` (protocol translation, quota routing, effort resolution, stream state machines). `middleware`, `auth`, and `logger` have no tests. CI runs build + test.
 
 ## Project Structure
 
@@ -54,8 +54,17 @@ internal/
   config/config.go                   # JSON config file (per-model settings, API keys, defaults)
   handler/
     messages.go                      # POST /v1/messages — core Anthropic-compatible handler (3-tier routing)
-    messages_native.go               # Native Messages API backend
-    messages_utils.go                # SSE helpers, model checks, vision detection, CLAUDE.md extraction
+    messages_native.go               # Native Messages API backend, thinking filter, adaptive thinking/effort
+    messages_chat_backend.go         # Chat Completions backend for the Messages endpoint
+    messages_responses_backend.go    # Responses backend for the Messages endpoint
+    messages_session.go              # Session snapshot construction
+    session_extract.go               # CLAUDE.md extraction from system prompts
+    message_inspect.go               # Model checks, vision detection, stop-reason mapping
+    sse.go, http_helpers.go          # SSE framing, body decoding, streaming helpers
+    effort_cache.go                  # Per-session cache of model-supported reasoning efforts
+    model_alias.go                   # Claude Code <-> Copilot model ID translation
+    anthropic_adapter.go             # Protocol conversion behind an interface
+    dependencies.go                  # Handler dependency injection
     chat_completions.go              # POST /chat/completions (OpenAI passthrough)
     responses.go                     # POST /responses (Responses API passthrough)
     translate_chat.go                # Anthropic <-> Chat Completions translation
@@ -121,7 +130,7 @@ POST /embeddings, /v1/embeddings    → Embeddings
 
 ### Middleware Chain
 
-RealIP → RequestID → requestLogger → CORS → Recoverer → Auth → [RateLimit] → [ManualApproval]
+RequestID → requestIDHeader → requestLogger → CORS → Recoverer → Auth → [RateLimit] → [ManualApproval]
 
 ## Key Dependencies
 
@@ -151,9 +160,11 @@ RealIP → RequestID → requestLogger → CORS → Recoverer → Auth → [Rate
 
 ### Config File (JSON)
 
-Location: `~/.local/share/copilot-proxy-go/config.json` (Linux)
+Location: `~/.local/share/copilot-proxy-go/config.json` (Linux), `~/Library/Application Support/copilot-proxy-go/config.json` (macOS)
 
 Fields: `auth.apiKeys`, `smallModel` (default: "gpt-5-mini"), `compactUseSmallModel`, `useFunctionApplyPatch`, `modelReasoningEfforts`, `extraPrompts`
+
+`modelReasoningEfforts` keys are resolved Copilot IDs in dotted form (`claude-opus-4.8`), not Claude Code's dashed form (`claude-opus-4-8`). Values act as a **default**, not an override — anything the client states explicitly wins (see Reasoning effort below).
 
 ### Token Storage
 
@@ -171,7 +182,10 @@ GitHub token: `~/.local/share/copilot-proxy-go/github_token`
 - **Three-tier backend routing**: Native Messages > Responses > Chat Completions (based on model's `supported_endpoints`)
 - **Format translation**: Full bidirectional Anthropic ↔ OpenAI translation including streaming SSE
 - **Thinking/reasoning blocks**: Maps between Claude extended thinking and OpenAI reasoning formats (with signatures)
-- **Quota optimization**: Detects compact/warmup requests → routes to cheaper small model
+- **Reasoning effort precedence**: `thinking.type=="disabled"` → `output_config.effort` → `thinking.budget_tokens` → config default. Modern Claude Code (2.1.x, beta `effort-2025-11-24`) sends `thinking:{type:"adaptive"}` plus `output_config.effort` and never sends `budget_tokens`, so `/effort` maps straight through; the budget branch serves older clients and direct SDK callers. Note `/effort max` is downgraded to `high` by Claude Code itself before it reaches the proxy
+- **Effort vocabularies differ per backend**: native Messages accepts `[low medium high xhigh max]`; the Responses endpoint rejects `max` and (on gpt-5.3-codex) `minimal`, so client values are remapped in `anthropicEffortToResponses`. Copilot's 400 body lists supported values **space-separated** — parsing it with the wrong separator poisons `effort_cache` and bricks the model for the process
+- **Quota optimization**: Detects compact/warmup requests → routes to cheaper small model. The native path forwards the original request body, so the routed model must be copied onto the payload or the downgrade never reaches upstream; a `X-Copilot-Proxy-Routed-Model` response header makes the substitution visible
+- **Native path edits the decoded map, not structs**: `ContentBlock` only models fields we translate, so rebuilding assistant content from it silently drops `cache_control` (losing prompt-cache breakpoints) and `redacted_thinking.data`. Filter in `map[string]any` and re-append the original values
 - **Tool result merging**: Merges standalone text blocks into adjacent tool_result blocks
 - **API masquerading**: Mimics VS Code Copilot Chat extension via specific headers
 - **Embedded assets**: Dashboard HTML via `go:embed`

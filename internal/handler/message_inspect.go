@@ -64,7 +64,8 @@ func mapStopReason(reason string) string {
 	case "tool_calls":
 		return "tool_use"
 	case "content_filter":
-		return "end_turn"
+		// end_turn would present a safety-truncated reply as a normal completion.
+		return "refusal"
 	default:
 		return "end_turn"
 	}

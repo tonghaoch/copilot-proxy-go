@@ -25,6 +25,11 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Small-model routing only updated req.Model; rawBody still has the original.
+	if req.Model != "" {
+		payload["model"] = req.Model
+	}
+
 	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
 	stripCacheControlScope(payload)
 
@@ -32,7 +37,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 	stripUnsupportedToolsInMap(payload)
 
 	// Filter thinking blocks in assistant messages
-	filterThinkingBlocksInMap(payload, req)
+	filterThinkingBlocksInMap(payload)
 
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
@@ -143,80 +148,120 @@ func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
 	}
 }
 
-// filterThinkingBlocksInMap filters thinking blocks in assistant messages
-// directly in the map representation to preserve unknown fields.
-func filterThinkingBlocksInMap(payload map[string]any, req *AnthropicRequest) {
+// filterThinkingBlocksInMap drops thinking blocks Copilot rejects from assistant
+// messages, editing the decoded map so fields ContentBlock omits survive.
+func filterThinkingBlocksInMap(payload map[string]any) {
 	messages, ok := payload["messages"].([]any)
 	if !ok {
 		return
 	}
 
-	for i, msgAny := range messages {
+	for _, msgAny := range messages {
 		msg, ok := msgAny.(map[string]any)
 		if !ok {
 			continue
 		}
-		role, _ := msg["role"].(string)
-		if role != "assistant" {
+		if role, _ := msg["role"].(string); role != "assistant" {
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok {
 			continue
 		}
 
-		// Get the parsed blocks from the structured request
-		if i >= len(req.Messages) {
-			continue
-		}
-		blocks := ParseMessageContent(req.Messages[i].Content)
-		var filtered []ContentBlock
-		for _, b := range blocks {
-			if b.Type == "thinking" {
-				if b.Thinking == "" || b.Thinking == "Thinking..." {
-					continue
-				}
-				if b.Signature == "" {
-					continue
-				}
-				if strings.Contains(b.Signature, "@") {
-					continue
-				}
+		kept := make([]any, 0, len(blocks))
+		for _, blockAny := range blocks {
+			block, ok := blockAny.(map[string]any)
+			if !ok {
+				kept = append(kept, blockAny)
+				continue
 			}
-			filtered = append(filtered, b)
+			if blockType, _ := block["type"].(string); blockType == "thinking" && !isForwardableThinking(block) {
+				continue
+			}
+			kept = append(kept, blockAny)
 		}
 
-		if len(filtered) == 0 {
-			filtered = []ContentBlock{{Type: "text", Text: ""}}
+		if len(kept) == 0 {
+			kept = []any{map[string]any{"type": "text", "text": ""}}
 		}
-
-		msg["content"] = filtered
+		msg["content"] = kept
 	}
+}
+
+// isForwardableThinking reports whether Copilot will accept a thinking block.
+func isForwardableThinking(block map[string]any) bool {
+	thinking, _ := block["thinking"].(string)
+	if thinking == "" || thinking == "Thinking..." {
+		return false
+	}
+	signature, _ := block["signature"].(string)
+	if signature == "" || strings.Contains(signature, "@") {
+		return false
+	}
+	return true
 }
 
 // applyAdaptiveThinkingInMap modifies the thinking config and output_config
 // in the map representation. Only applies when the model supports adaptive
 // thinking. Returns the effort actually written to payload (after consulting
 // the session effort cache); "" when no effort was set.
+//
+// The configured effort is only a default; see clientRequestedEffort.
 func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, models ModelStore, cfg RuntimeConfig) string {
 	model := models.FindModel(req.Model)
 	if model == nil || !model.Capabilities.Supports.AdaptiveThinking {
 		return ""
 	}
 
-	// Set thinking type to adaptive
+	// Explicitly disabled — forward the client's request untouched.
+	if req.Thinking != nil && req.Thinking.Type == "disabled" {
+		return ""
+	}
+
 	payload["thinking"] = map[string]string{"type": "adaptive"}
 
-	// Set output_config effort, clamping against any cached restrictions for
-	// this model. If Copilot has previously rejected our requested effort for
-	// this model in the current session, clampEffort downgrades to the
-	// closest supported value.
-	requested := mapEffort(cfg.ReasoningEffort(normalizeModelName(req.Model)))
+	requested := clientRequestedEffort(req)
+	if requested == "" {
+		requested = cfg.ReasoningEffort(normalizeModelName(req.Model))
+	}
 	if requested == "" {
 		return ""
 	}
+
+	// Downgrade if Copilot already rejected this effort earlier in the session.
 	effective := clampEffort(req.Model, requested)
 	if effective != requested {
 		slog.Debug("effort clamped from cache", "model", req.Model, "requested", requested, "using", effective)
 	}
 	setOutputConfigEffort(payload, effective)
 	return effective
+}
+
+// clientRequestedEffort reads the effort the caller asked for, or "" if unset.
+func clientRequestedEffort(req *AnthropicRequest) string {
+	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
+		return req.OutputConfig.Effort
+	}
+	if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
+		return effortFromThinkingBudget(req.Thinking.BudgetTokens)
+	}
+	return ""
+}
+
+// effortFromThinkingBudget maps a budget onto an effort, tracking Claude Code's
+// think tiers (~4k, ~10k, ~32k). Only older clients send budgets.
+func effortFromThinkingBudget(budget int) string {
+	switch {
+	case budget >= 32000:
+		return "max"
+	case budget >= 10000:
+		return "high"
+	case budget >= 4000:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 // setOutputConfigEffort writes payload["output_config"]["effort"] = effort,
@@ -282,18 +327,6 @@ func maybeRetryWithFallbackEffort(ctx context.Context, client CopilotClient, ori
 	}
 	resp, err := client.ProxyMessages(ctx, body, betaHeader, vision, isAgent)
 	return true, resp, err
-}
-
-// mapEffort maps config reasoning effort values to Anthropic output_config effort.
-func mapEffort(effort string) string {
-	switch effort {
-	case "xhigh":
-		return "max"
-	case "none", "minimal":
-		return "low"
-	default:
-		return effort
-	}
 }
 
 // filterBetaHeader strips beta tokens that Copilot's upstream rejects.
