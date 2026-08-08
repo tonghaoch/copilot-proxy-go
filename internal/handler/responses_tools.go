@@ -1,5 +1,61 @@
 package handler
 
+import "strings"
+
+// normalizeResponsesToolDescriptions fills blank client-tool descriptions.
+func normalizeResponsesToolDescriptions(payload map[string]any) {
+	if tools, ok := payload["tools"].([]any); ok {
+		normalizeToolListDescriptions(tools)
+	}
+
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return
+	}
+	for _, itemAny := range input {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tools, ok := item["tools"].([]any); ok {
+			normalizeToolListDescriptions(tools)
+		}
+	}
+}
+
+func normalizeToolListDescriptions(tools []any) {
+	for _, toolAny := range tools {
+		tool, ok := toolAny.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		toolType, _ := tool["type"].(string)
+		if toolType == "function" || toolType == "custom" || toolType == "namespace" {
+			description, _ := tool["description"].(string)
+			if strings.TrimSpace(description) == "" {
+				tool["description"] = fallbackToolDescription(toolType, tool)
+			}
+		}
+
+		if nested, ok := tool["tools"].([]any); ok {
+			normalizeToolListDescriptions(nested)
+		}
+	}
+}
+
+func fallbackToolDescription(toolType string, tool map[string]any) string {
+	name, _ := tool["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Tool provided by the client."
+	}
+	if toolType == "namespace" {
+		return "Tools in the " + name + " namespace."
+	}
+	return "Invoke the " + name + " tool."
+}
+
 func convertApplyPatchTools(tools []any) []any {
 	result := make([]any, 0, len(tools))
 	for _, t := range tools {

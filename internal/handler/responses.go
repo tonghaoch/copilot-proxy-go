@@ -59,6 +59,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		payload["tools"] = convertLocalShellTools(tools)
 		payload["tools"] = removeWebSearchTools(payload["tools"].([]any))
 	}
+	normalizeResponsesToolDescriptions(payload)
 	payload["service_tier"] = nil
 
 	isStream, _ := payload["stream"].(bool)
