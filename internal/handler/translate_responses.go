@@ -291,16 +291,24 @@ func buildResponsesContent(blocks []ContentBlock) any {
 			parts = append(parts, map[string]string{"type": "input_text", "text": b.Text})
 		case "image":
 			if b.Source != nil {
-				url := fmt.Sprintf("data:%s;base64,%s", b.Source.MediaType, b.Source.Data)
-				parts = append(parts, map[string]any{
-					"type":   "input_image",
-					"url":    url,
-					"detail": "auto",
-				})
+				parts = append(parts, buildResponsesImageContent(b.Source))
 			}
 		}
 	}
 	return parts
+}
+
+// buildResponsesImageContent is shared by message content and tool outputs.
+func buildResponsesImageContent(source *ImageSource) map[string]any {
+	url := source.URL
+	if source.Type != "url" {
+		url = fmt.Sprintf("data:%s;base64,%s", source.MediaType, source.Data)
+	}
+	return map[string]any{
+		"type":      "input_image",
+		"image_url": url,
+		"detail":    "auto",
+	}
 }
 
 // parseSystemPromptForResponses builds the system instructions for the Responses API.
@@ -363,12 +371,7 @@ func convertToolResultContentForResponses(raw json.RawMessage) any {
 				})
 			case "image":
 				if b.Source != nil {
-					url := fmt.Sprintf("data:%s;base64,%s", b.Source.MediaType, b.Source.Data)
-					result = append(result, map[string]any{
-						"type":   "input_image",
-						"url":    url,
-						"detail": "auto",
-					})
+					result = append(result, buildResponsesImageContent(b.Source))
 				}
 			}
 		}
