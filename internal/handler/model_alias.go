@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -20,7 +21,7 @@ import (
 //	claude-opus-4.7-high         (reasoning-tier suffix)
 //
 // Capture groups: family, major, minor (optional), suffix (optional).
-var claudeDotRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:\.(\d+))?(?:-(.+))?$`)
+var claudeDotRe = regexp.MustCompile(`^(claude-[a-z]+)-(\d+)(?:\.(\d+))?(?:-(.+))?$`)
 
 // claudeDashRe matches Claude Code's dashed Claude IDs.
 //
@@ -31,12 +32,12 @@ var claudeDotRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:\.
 //	claude-sonnet-4
 //
 // Capture groups: family, major, minor (optional), suffix (optional).
-var claudeDashRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:-(\d+))?(?:-(.+))?$`)
+var claudeDashRe = regexp.MustCompile(`^(claude-[a-z]+)-(\d+)(?:-(\d+))?(?:-(.+))?$`)
 
-// is1MContextModel reports whether a model advertises at least a 1M-token
-// context window. A 256K or 400K model must not be advertised as supporting 1M.
+// is1MContextModel reports whether a model advertises a 1M-token context
+// window or is explicitly configured as supporting one.
 func is1MContextModel(m state.Model) bool {
-	return m.Capabilities.Limits.MaxContextWindowTokens >= 1000000
+	return m.Capabilities.Limits.MaxContextWindowTokens >= 1000000 || config.Is1MContextModel(m.ID)
 }
 
 // ToClaudeCodeName converts Copilot's dotted Claude IDs to dashed form and

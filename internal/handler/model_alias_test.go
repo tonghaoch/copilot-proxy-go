@@ -31,6 +31,9 @@ func TestToClaudeCodeName(t *testing.T) {
 		{"below 1M stays plain", modelWithContext("test-model", 999999), "test-model"},
 		{"unknown context stays plain", modelWithContext("gpt-6-astra", 0), "gpt-6-astra"},
 		{"claude below 1M stays plain", modelWithContext("claude-opus-4.8", 400000), "claude-opus-4-8"},
+		{"haiku 5.5 at 200K gets [1m] from config override", modelWithContext("claude-haiku-5.5", 200000), "claude-haiku-5-5[1m]"},
+		{"future claude family is dashed, not passed through", modelWithContext("claude-fable-5.1", 200000), "claude-fable-5-1"},
+		{"future claude family at 1M gets [1m]", modelWithContext("claude-fable-5.1", 1000000), "claude-fable-5-1[1m]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

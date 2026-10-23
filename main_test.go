@@ -41,12 +41,14 @@ func TestBuildClaudeCodeCommandContextSuffix(t *testing.T) {
 		if smallContext >= 1000000 {
 			wantSmall += "[1m]"
 		}
-		cmd := buildClaudeCodeCommand(shell.Zsh, 4141, handler.ToClaudeCodeName(primary), handler.ToClaudeCodeName(small))
+		cmd := buildClaudeCodeCommand(shell.Zsh, 4141, handler.ToClaudeCodeName(primary), handler.ToClaudeCodeName(small), "opus", "fable")
 		for _, check := range []string{
 			"ANTHROPIC_MODEL='gpt-6-astra[1m]'",
+			"ANTHROPIC_DEFAULT_OPUS_MODEL='opus'",
 			"ANTHROPIC_DEFAULT_SONNET_MODEL='gpt-6-astra[1m]'",
 			"ANTHROPIC_SMALL_FAST_MODEL='" + wantSmall + "'",
 			"ANTHROPIC_DEFAULT_HAIKU_MODEL='" + wantSmall + "'",
+			"ANTHROPIC_DEFAULT_FABLE_MODEL='fable'",
 		} {
 			if !strings.Contains(cmd, check) {
 				t.Errorf("expected command to contain %q, got %q", check, cmd)

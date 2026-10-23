@@ -6,6 +6,7 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // Messages handles POST /v1/messages — the Anthropic-compatible endpoint.
@@ -68,18 +69,24 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		rec.ThinkingBudget = req.Thinking.BudgetTokens
 	}
 
+	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec)
+}
+
+// dispatchMessages sends a parsed Anthropic request to the backend that serves
+// its model: native Messages, Responses, or Chat Completions. Split out so the
+// Responses endpoint can reuse the router for models without /responses.
+func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord) {
 	if model != nil && isMessagesSupported(model) {
 		slog.Info("routing to Messages API", "model", req.Model)
 		rec.Backend = "messages"
-		h.handleWithMessagesAPI(ww, r, &req, forceAgent, body, rec)
+		h.handleWithMessagesAPI(w, r, req, forceAgent, body, rec)
 	} else if model != nil && isResponsesSupported(model) {
 		slog.Info("routing to Responses API", "model", req.Model)
 		rec.Backend = "responses"
-		h.handleWithResponsesAPI(ww, r, &req, forceAgent, rec)
+		h.handleWithResponsesAPI(w, r, req, forceAgent, rec)
 	} else {
 		slog.Info("routing to Chat Completions API", "model", req.Model)
 		rec.Backend = "chat_completions"
-		h.handleWithChatCompletions(ww, r, &req, forceAgent, rec)
+		h.handleWithChatCompletions(w, r, req, forceAgent, rec)
 	}
-
 }

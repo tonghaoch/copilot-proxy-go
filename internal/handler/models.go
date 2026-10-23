@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // ModelsListResponse is the OpenAI-compatible models list response.
@@ -15,14 +17,16 @@ type ModelsListResponse struct {
 
 // ModelEntry is a single model in the list response.
 type ModelEntry struct {
-	ID              string `json:"id"`
-	Object          string `json:"object"`
-	Type            string `json:"type"`
-	Created         int    `json:"created"`
-	OwnedBy         string `json:"owned_by"`
-	DisplayName     string `json:"display_name,omitempty"`
-	ContextWindow   int    `json:"context_window,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	ID              string             `json:"id"`
+	Object          string             `json:"object"`
+	Type            string             `json:"type"`
+	Created         int                `json:"created"`
+	OwnedBy         string             `json:"owned_by"`
+	DisplayName     string             `json:"display_name,omitempty"`
+	ContextWindow   int                `json:"context_window,omitempty"`
+	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
+	Limits          *state.ModelLimits `json:"limits,omitempty"`
+	Policy          string             `json:"policy,omitempty"`
 }
 
 // Models handles GET /models and /v1/models.
@@ -54,6 +58,7 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[publicID] = struct{}{}
+		limits := m.Capabilities.Limits
 		entries = append(entries, ModelEntry{
 			ID:              publicID,
 			Object:          "model",
@@ -61,8 +66,10 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 			Created:         0,
 			OwnedBy:         m.Vendor,
 			DisplayName:     m.Name,
-			ContextWindow:   m.Capabilities.Limits.MaxContextWindowTokens,
-			MaxOutputTokens: m.Capabilities.Limits.MaxOutputTokens,
+			ContextWindow:   limits.MaxContextWindowTokens,
+			MaxOutputTokens: limits.MaxOutputTokens,
+			Limits:          &limits,
+			Policy:          m.Policy.State,
 		})
 	}
 

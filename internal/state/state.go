@@ -9,10 +9,19 @@ import (
 
 // ModelLimits defines token limits for a model.
 type ModelLimits struct {
-	MaxContextWindowTokens int `json:"max_context_window_tokens"`
-	MaxOutputTokens        int `json:"max_output_tokens"`
-	MaxPromptTokens        int `json:"max_prompt_tokens"`
-	MaxInputs              int `json:"max_inputs"`
+	MaxContextWindowTokens int         `json:"max_context_window_tokens"`
+	MaxOutputTokens        int         `json:"max_output_tokens"`
+	MaxNonStreamingOutput  int         `json:"max_non_streaming_output_tokens"`
+	MaxPromptTokens        int         `json:"max_prompt_tokens"`
+	MaxInputs              int         `json:"max_inputs"`
+	Vision                 VisionLimit `json:"vision"`
+}
+
+// VisionLimit describes image input limits. Zero values mean the model has none.
+type VisionLimit struct {
+	MaxPromptImageSize  int      `json:"max_prompt_image_size"`
+	MaxPromptImages     int      `json:"max_prompt_images"`
+	SupportedMediaTypes []string `json:"supported_media_types"`
 }
 
 // ModelSupports defines what features a model supports.
@@ -48,8 +57,15 @@ type Model struct {
 	Vendor             string            `json:"vendor"`
 	ModelPickerEnabled bool              `json:"model_picker_enabled"`
 	Preview            bool              `json:"preview"`
+	Policy             ModelPolicy       `json:"policy"`
 	Capabilities       ModelCapabilities `json:"capabilities"`
 	SupportedEndpoints []string          `json:"supported_endpoints"`
+}
+
+// ModelPolicy is Copilot's per-model admin policy. State is "enabled" when the
+// org allows the model; other values (e.g. "disabled") mean it is restricted.
+type ModelPolicy struct {
+	State string `json:"state"`
 }
 
 // ModelsResponse is the response from the Copilot models API.

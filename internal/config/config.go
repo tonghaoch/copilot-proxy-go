@@ -15,8 +15,11 @@ type Config struct {
 	ExtraPrompts          map[string]string `json:"extraPrompts"`
 	SmallModel            string            `json:"smallModel"`
 	ModelReasoningEfforts map[string]string `json:"modelReasoningEfforts"`
-	UseFunctionApplyPatch bool              `json:"useFunctionApplyPatch"`
-	CompactUseSmallModel  bool              `json:"compactUseSmallModel"`
+	// Extended1MModels lists Copilot model IDs that support the 1M window even
+	// when Copilot's /models reports 200K. Set to false to disable one.
+	Extended1MModels      map[string]bool `json:"extended1MModels"`
+	UseFunctionApplyPatch bool            `json:"useFunctionApplyPatch"`
+	CompactUseSmallModel  bool            `json:"compactUseSmallModel"`
 }
 
 type AuthConfig struct {
@@ -49,9 +52,17 @@ func defaultConfig() *Config {
 		ExtraPrompts:          make(map[string]string),
 		SmallModel:            "gpt-5-mini",
 		ModelReasoningEfforts: map[string]string{"gpt-5-mini": "low"},
+		Extended1MModels:      defaultExtended1MModels(),
 		UseFunctionApplyPatch: true,
 		CompactUseSmallModel:  true,
 	}
+}
+
+// defaultExtended1MModels lists Claude models GitHub documents as supporting
+// the 1M window, but which /models reports at 200K. Copilot's own value wins
+// when it exceeds 200K; this only adds the models it under-reports.
+func defaultExtended1MModels() map[string]bool {
+	return map[string]bool{"claude-haiku-5.5": true}
 }
 
 // Load reads the config from disk, creating it with defaults if it doesn't exist.
@@ -90,6 +101,11 @@ func Load() error {
 	}
 	if cfg.ModelReasoningEfforts == nil {
 		cfg.ModelReasoningEfforts = map[string]string{"gpt-5-mini": "low"}
+	}
+	// A config written before this field existed keeps the default list. An
+	// explicit "extended1MModels": {} disables the override entirely.
+	if cfg.Extended1MModels == nil {
+		cfg.Extended1MModels = defaultExtended1MModels()
 	}
 
 	mu.Lock()
@@ -149,7 +165,16 @@ func cloneConfig(cfg *Config) *Config {
 	cloned.Auth.APIKeys = append([]string(nil), cfg.Auth.APIKeys...)
 	cloned.ExtraPrompts = cloneStringMap(cfg.ExtraPrompts)
 	cloned.ModelReasoningEfforts = cloneStringMap(cfg.ModelReasoningEfforts)
+	cloned.Extended1MModels = cloneBoolMap(cfg.Extended1MModels)
 	return &cloned
+}
+
+func cloneBoolMap(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func cloneStringMap(src map[string]string) map[string]string {
@@ -190,6 +215,13 @@ func GetReasoningEffort(model string) string {
 		return effort
 	}
 	return "high"
+}
+
+// Is1MContextModel reports whether a Copilot model ID is listed in
+// extended1MModels, i.e. it supports the 1M window even when Copilot reports
+// 200K for it.
+func Is1MContextModel(model string) bool {
+	return Get().Extended1MModels[model]
 }
 
 // GetAPIKeys returns the configured API keys (normalized).
