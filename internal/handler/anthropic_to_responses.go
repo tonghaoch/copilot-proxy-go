@@ -181,7 +181,7 @@ func (s *responsesStreamWriter) openBlock(block ContentBlock) error {
 		s.itemID = "rs_" + s.respID
 		return s.send("response.output_item.added", map[string]any{
 			"output_index": s.outputIdx,
-			"item":         map[string]any{"type": "reasoning", "id": s.itemID, "summary": []any{}},
+			"item":         map[string]any{"type": "reasoning", "id": s.itemID, "status": "in_progress", "summary": []any{}},
 		})
 	case "tool_use":
 		s.itemID = block.ID
@@ -230,7 +230,7 @@ func (s *responsesStreamWriter) closeBlock() error {
 		item = ResponsesOutput{Type: "message", ID: s.itemID, Status: "completed", Role: "assistant",
 			Content: []OutputContent{{Type: "output_text", Text: s.text.String()}}}
 	case "thinking":
-		item = ResponsesOutput{Type: "reasoning", ID: s.itemID, EncryptedContent: s.signature,
+		item = ResponsesOutput{Type: "reasoning", ID: s.itemID, Status: "completed", EncryptedContent: s.signature,
 			Summary: []SummaryItem{{Type: "summary_text", Text: s.thinking.String()}}}
 	case "tool_use":
 		block.Input = json.RawMessage(s.args.String())

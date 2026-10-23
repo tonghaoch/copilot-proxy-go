@@ -153,3 +153,39 @@ func TestResponsesStreamWriterEmitsCompletedWithToolCall(t *testing.T) {
 		t.Fatalf("output = %+v", stream.output)
 	}
 }
+
+func TestResponsesStreamWriterReasoningItemHasStatus(t *testing.T) {
+	var added, done []string
+	emit := func(eventType string, data any) error {
+		m, _ := data.(map[string]any)
+		switch eventType {
+		case "response.output_item.added":
+			item, _ := m["item"].(map[string]any)
+			added = append(added, rsStr(item["status"]))
+		case "response.output_item.done":
+			item, _ := m["item"].(ResponsesOutput)
+			done = append(done, item.Status)
+		}
+		return nil
+	}
+	stream := newResponsesStreamWriter(emit, "gemini-3.8-flash", nil)
+	stream.respID = "resp_test"
+	sse := strings.Join([]string{
+		"event: message_start", `data: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":1}}}`, "",
+		"event: content_block_start", `data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`, "",
+		"event: content_block_delta", `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}`, "",
+		"event: content_block_delta", `data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}`, "",
+		"event: content_block_stop", `data: {"type":"content_block_stop","index":0}`, "",
+		"event: message_stop", `data: {"type":"message_stop"}`, "",
+	}, "\n") + "\n"
+
+	if err := readSSE(strings.NewReader(sse), stream.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if len(added) != 1 || added[0] != "in_progress" {
+		t.Fatalf("reasoning added status = %v, want in_progress", added)
+	}
+	if len(done) != 1 || done[0] != "completed" {
+		t.Fatalf("reasoning done status = %v, want completed", done)
+	}
+}
