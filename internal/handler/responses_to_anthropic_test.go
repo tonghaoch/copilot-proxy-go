@@ -189,3 +189,64 @@ func TestResponsesStreamWriterReasoningItemHasStatus(t *testing.T) {
 		t.Fatalf("reasoning done status = %v, want completed", done)
 	}
 }
+
+// Codex sends a history ending in the assistant's last reply. Anthropic
+// models reject a trailing assistant turn, so the conversation must end with a user turn.
+func TestResponsesToAnthropicEndsWithUserTurn(t *testing.T) {
+	endings := map[string][]any{
+		"assistant text": {
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+			map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "PONG"}}},
+		},
+		"signed reasoning": {
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+			map[string]any{"type": "reasoning", "summary": []any{}, "encrypted_content": "sig"},
+		},
+		"tool output": {
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+			map[string]any{"type": "function_call", "call_id": "c", "name": "shell", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "c", "output": "ok"},
+		},
+	}
+	for name, input := range endings {
+		req, _, err := responsesToAnthropic(map[string]any{"input": input}, "claude-haiku-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if last := req.Messages[len(req.Messages)-1].Role; last != "user" {
+			t.Fatalf("%s: conversation ends with %q, want user", name, last)
+		}
+	}
+}
+
+// Codex parses response.completed strictly and fails without usage.total_tokens.
+func TestResponsesUsageIncludesTotalTokens(t *testing.T) {
+	result := anthropicToResponsesResult(&AnthropicResponse{
+		ID: "m", Model: "claude-haiku-5.5",
+		Usage: AnthropicUsage{InputTokens: 10, OutputTokens: 4},
+	}, nil)
+	if result.Usage.TotalTokens != 14 {
+		t.Fatalf("result total_tokens = %d, want 14", result.Usage.TotalTokens)
+	}
+
+	var completed map[string]any
+	emit := func(eventType string, data any) error {
+		if eventType == "response.completed" {
+			completed = data.(map[string]any)
+		}
+		return nil
+	}
+	stream := newResponsesStreamWriter(emit, "claude-haiku-5.5", nil)
+	sse := strings.Join([]string{
+		"event: message_start", `data: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":10}}}`, "",
+		"event: message_delta", `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}`, "",
+		"event: message_stop", `data: {"type":"message_stop"}`, "",
+	}, "\n") + "\n"
+	if err := readSSE(strings.NewReader(sse), stream.Handle); err != nil {
+		t.Fatal(err)
+	}
+	usage := completed["response"].(map[string]any)["usage"].(ResponsesUsage)
+	if usage.TotalTokens != 14 {
+		t.Fatalf("stream total_tokens = %d, want 14", usage.TotalTokens)
+	}
+}

@@ -45,6 +45,11 @@ func responsesToAnthropic(payload map[string]any, model string) (*AnthropicReque
 		}
 	}
 
+	// Anthropic models reject a conversation that ends with an assistant turn
+	// (prefill). Codex sends that shape after each reply, so close it with a user turn.
+	if n := len(c.turns); n > 0 && c.turns[n-1].role == "assistant" {
+		c.add("user", ContentBlock{Type: "text", Text: "Continue."})
+	}
 	msgs, err := c.messages()
 	if err != nil {
 		return nil, nil, err

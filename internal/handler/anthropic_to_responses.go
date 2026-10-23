@@ -16,6 +16,7 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 		Usage: &ResponsesUsage{
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
+			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		},
 	}
 	if resp.Usage.CacheReadInputTokens > 0 {
@@ -153,6 +154,7 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 			status = "incomplete"
 		}
 		resp := s.responseObject(status)
+		s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens
 		resp["usage"] = s.usage
 		return s.send("response.completed", map[string]any{"response": resp})
 	case "error":

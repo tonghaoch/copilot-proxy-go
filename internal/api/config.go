@@ -14,11 +14,17 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
+// Interaction types the official client sends in X-Interaction-Type.
+const (
+	InteractionAgent    = "conversation-agent"
+	InteractionSubagent = "conversation-subagent"
+)
+
 const (
 	GitHubClientID        = "Iv1.b507a08c87ecfe98"
 	GitHubScope           = "read:user"
 	FallbackVSCodeVersion = "1.109.3"
-	CopilotChatVersion    = "0.37.6"
+	CopilotChatVersion    = "0.44.0"
 	GitHubAPIVersion      = "2025-10-01"
 )
 
@@ -82,7 +88,12 @@ func BuildCopilotHeaders(copilotToken, vsCodeVersion string) http.Header {
 	h.Set("User-Agent", "GitHubCopilotChat/"+CopilotChatVersion)
 	h.Set("Openai-Intent", "conversation-agent")
 	h.Set("X-Github-Api-Version", GitHubAPIVersion)
-	h.Set("X-Request-Id", uuid.New().String())
+	requestID := uuid.New().String()
+	h.Set("X-Request-Id", requestID)
+	// The official client tags each request with its interaction type and
+	// repeats the request ID as the agent task ID.
+	h.Set("X-Interaction-Type", InteractionAgent)
+	h.Set("X-Agent-Task-Id", requestID)
 	h.Set("X-Vscode-User-Agent-Library-Version", "electron-fetch")
 	return h
 }

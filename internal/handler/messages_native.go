@@ -43,6 +43,9 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
 	// Copilot rejects it.
 	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state, h.config)
+	if v := thinkingRewriteHeader(req, payload); v != "" {
+		w.Header().Set("X-Copilot-Proxy-Thinking", v)
+	}
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -236,6 +239,21 @@ func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, m
 	}
 	setOutputConfigEffort(payload, effective)
 	return effective
+}
+
+// thinkingRewriteHeader describes a thinking.type=enabled request that was
+// rewritten to adaptive, so the client can tell its budget was not used.
+// Copilot rejects enabled for some models and accepts adaptive. Returns "" when
+// no rewrite happened.
+func thinkingRewriteHeader(req *AnthropicRequest, payload map[string]any) string {
+	if req.Thinking == nil || req.Thinking.Type != "enabled" {
+		return ""
+	}
+	t, ok := payload["thinking"].(map[string]string)
+	if !ok || t["type"] != "adaptive" {
+		return ""
+	}
+	return "enabled-rewritten-to-adaptive"
 }
 
 // clientRequestedEffort reads the effort the caller asked for, or "" if unset.

@@ -172,3 +172,21 @@ func TestEffortFromThinkingBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestThinkingRewriteHeader(t *testing.T) {
+	enabled := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "enabled", BudgetTokens: 1024}}
+	payload := map[string]any{"thinking": map[string]string{"type": "adaptive"}}
+	if got := thinkingRewriteHeader(enabled, payload); got != "enabled-rewritten-to-adaptive" {
+		t.Fatalf("enabled->adaptive header = %q", got)
+	}
+
+	adaptive := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "adaptive"}}
+	if got := thinkingRewriteHeader(adaptive, payload); got != "" {
+		t.Fatalf("client-sent adaptive should not be flagged, got %q", got)
+	}
+
+	disabled := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "disabled"}}
+	if got := thinkingRewriteHeader(disabled, map[string]any{}); got != "" {
+		t.Fatalf("disabled should not be flagged, got %q", got)
+	}
+}

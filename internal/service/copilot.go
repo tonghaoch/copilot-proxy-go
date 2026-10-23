@@ -122,7 +122,7 @@ func ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision boo
 }
 
 func (c *Client) ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(isAgent, vision, ""))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(ctx, isAgent, vision, ""))
 }
 
 // ProxyMessages forwards a request to the Copilot native Messages API.
@@ -131,7 +131,7 @@ func ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, 
 }
 
 func (c *Client) ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(isAgent, vision, betaHeader))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(ctx, isAgent, vision, betaHeader))
 }
 
 // ProxyResponses forwards a request to the Copilot Responses API.
@@ -140,7 +140,7 @@ func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*ht
 }
 
 func (c *Client) ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(ctx, isAgent, vision, ""))
 }
 
 // ProxyEmbeddings forwards a request to the Copilot Embeddings API.
@@ -152,9 +152,28 @@ func (c *Client) ProxyEmbeddings(ctx context.Context, body []byte) (*http.Respon
 	return c.doCopilotRequest(ctx, http.MethodPost, "/embeddings", body, nil)
 }
 
-func requestHeaders(isAgent, vision bool, betaHeader string) func(http.Header) {
+// interactionTypeKey carries the kind of interaction on a request context.
+type interactionTypeKey struct{}
+
+// WithSubagentInteraction marks ctx as a subagent request. The official client
+// sends X-Interaction-Type: conversation-subagent for these instead of
+// conversation-agent.
+func WithSubagentInteraction(ctx context.Context) context.Context {
+	return context.WithValue(ctx, interactionTypeKey{}, api.InteractionSubagent)
+}
+
+// interactionType returns the X-Interaction-Type for a request context.
+func interactionType(ctx context.Context) string {
+	if v, ok := ctx.Value(interactionTypeKey{}).(string); ok {
+		return v
+	}
+	return api.InteractionAgent
+}
+
+func requestHeaders(ctx context.Context, isAgent, vision bool, betaHeader string) func(http.Header) {
 	return func(header http.Header) {
 		api.SetInitiatorHeader(header, isAgent)
+		header.Set("X-Interaction-Type", interactionType(ctx))
 		if vision {
 			header.Set("Copilot-Vision-Request", "true")
 		}

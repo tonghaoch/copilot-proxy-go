@@ -6,6 +6,7 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
+	"github.com/tonghaoch/copilot-proxy-go/internal/service"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -69,6 +70,9 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		rec.ThinkingBudget = req.Thinking.BudgetTokens
 	}
 
+	if subagent != nil {
+		r = r.WithContext(service.WithSubagentInteraction(r.Context()))
+	}
 	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec)
 }
 
