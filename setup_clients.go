@@ -13,24 +13,26 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func responsesCapableModelIDs(models []state.Model) []string {
-	seen := make(map[string]struct{}, len(models))
+// codexModelWindows maps every model flavour Codex can use to its prompt
+// budget. All chat models qualify: /v1/responses converts requests for
+// models without a native Responses endpoint.
+func codexModelWindows(models []state.Model) ([]string, map[string]int) {
+	windows := map[string]int{}
 	ids := make([]string, 0, len(models))
 	for _, m := range models {
-		for _, endpoint := range m.SupportedEndpoints {
-			if endpoint != "/responses" {
+		if m.Capabilities.Type != "chat" {
+			continue
+		}
+		for _, f := range handler.ModelFlavours(m) {
+			if _, dup := windows[f.ID]; dup {
 				continue
 			}
-			if _, dup := seen[m.ID]; dup {
-				break
-			}
-			seen[m.ID] = struct{}{}
-			ids = append(ids, m.ID)
-			break
+			windows[f.ID] = f.ContextWindow
+			ids = append(ids, f.ID)
 		}
 	}
 	sort.Strings(ids)
-	return ids
+	return ids, windows
 }
 
 func codexAPIKey() string {
@@ -61,7 +63,7 @@ func buildCodexCommand(shellType shell.ShellType, model, baseURL string, context
 }
 
 func runCodexSetup(port int, models []state.Model) error {
-	ids := responsesCapableModelIDs(models)
+	ids, windows := codexModelWindows(models)
 	model, err := runSelect("Select Codex model", ids, palettePrimary)
 	if err != nil {
 		return fmt.Errorf("model selection cancelled: %w", err)
@@ -69,10 +71,7 @@ func runCodexSetup(port int, models []state.Model) error {
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
 	shellType := shell.Detect()
-	contextWindow := 0
-	if m := state.Global.FindModel(model); m != nil {
-		contextWindow = m.Capabilities.Limits.MaxContextWindowTokens
-	}
+	contextWindow := windows[model]
 	vars := []shell.EnvVar{
 		{Key: "CODEX_API_KEY", Value: codexAPIKey()},
 		{Key: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
@@ -87,12 +86,13 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 	seen := make(map[string]struct{}, len(models))
 	ids := make([]string, 0, len(models))
 	for _, m := range models {
-		name := handler.ToClaudeCodeName(m)
-		if _, dup := seen[name]; dup {
-			continue
+		for _, f := range handler.ModelFlavours(m) {
+			if _, dup := seen[f.ID]; dup {
+				continue
+			}
+			seen[f.ID] = struct{}{}
+			ids = append(ids, f.ID)
 		}
-		seen[name] = struct{}{}
-		ids = append(ids, name)
 	}
 	sort.Strings(ids)
 

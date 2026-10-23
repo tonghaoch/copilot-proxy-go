@@ -397,13 +397,7 @@ func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 	// Usage
 	usage := AnthropicUsage{}
 	if resp.Usage != nil {
-		usage.InputTokens = resp.Usage.PromptTokens
-		usage.OutputTokens = resp.Usage.CompletionTokens
-		if resp.Usage.PromptTokensDetails != nil {
-			cached := resp.Usage.PromptTokensDetails.CachedTokens
-			usage.CacheReadInputTokens = cached
-			usage.InputTokens -= cached
-		}
+		usage = resp.Usage.toAnthropic()
 	}
 
 	return &AnthropicResponse{

@@ -9,23 +9,28 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func TestResponsesCapableModelIDs(t *testing.T) {
-	models := []state.Model{
-		{ID: "z-model", SupportedEndpoints: []string{"/responses"}},
-		{ID: "chat-only", SupportedEndpoints: []string{"/chat/completions"}},
-		{ID: "a-model", SupportedEndpoints: []string{"/v1/messages", "/responses"}},
-		{ID: "z-model", SupportedEndpoints: []string{"/responses"}},
+func TestCodexModelWindows(t *testing.T) {
+	chat := func(id string, ctx int) state.Model {
+		m := state.Model{ID: id}
+		m.Capabilities.Type = "chat"
+		m.Capabilities.Limits.MaxPromptTokens = ctx
+		return m
 	}
+	tiered := chat("gpt-6-luna", 872000)
+	tiered.Billing.TokenPrices = map[string]state.PriceTier{
+		"default":      {MaxPromptTokens: 272000},
+		"long_context": {MaxPromptTokens: 872000},
+	}
+	embed := state.Model{ID: "text-embedding-3-small"}
+	embed.Capabilities.Type = "embeddings"
 
-	got := responsesCapableModelIDs(models)
-	want := []string{"a-model", "z-model"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d models, got %d: %v", len(want), len(got), got)
+	ids, windows := codexModelWindows([]state.Model{tiered, chat("claude-haiku-5.5", 100000), embed, chat("gpt-6-luna", 1)})
+	want := []string{"claude-haiku-5-5", "gpt-6-luna", "gpt-6-luna[long]"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("ids = %v, want %v", ids, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("expected %v, got %v", want, got)
-		}
+	if windows["gpt-6-luna"] != 272000 || windows["gpt-6-luna[long]"] != 872000 {
+		t.Fatalf("windows = %v", windows)
 	}
 }
 

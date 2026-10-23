@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -58,6 +59,7 @@ type Model struct {
 	ModelPickerEnabled bool              `json:"model_picker_enabled"`
 	Preview            bool              `json:"preview"`
 	Policy             ModelPolicy       `json:"policy"`
+	Billing            ModelBilling      `json:"billing"`
 	Capabilities       ModelCapabilities `json:"capabilities"`
 	SupportedEndpoints []string          `json:"supported_endpoints"`
 }
@@ -66,6 +68,56 @@ type Model struct {
 // org allows the model; other values (e.g. "disabled") mean it is restricted.
 type ModelPolicy struct {
 	State string `json:"state"`
+}
+
+// ModelBilling holds Copilot's per-model pricing. TokenPrices has a "default"
+// tier and, for models with an extended window, a "long_context" tier; the
+// official clients treat the tier as a prompt budget the user opts into.
+type ModelBilling struct {
+	AutoDiscount float64              `json:"auto_discount,omitempty"`
+	TokenPrices  map[string]PriceTier `json:"-"`
+}
+
+// PriceTier is one context tier of a model's token pricing.
+type PriceTier struct {
+	MaxPromptTokens int     `json:"max_prompt_tokens"`
+	InputPrice      float64 `json:"input_price"`
+	OutputPrice     float64 `json:"output_price"`
+	CacheReadPrice  float64 `json:"cache_read_price"`
+	CacheWritePrice float64 `json:"cache_write_price"`
+}
+
+// UnmarshalJSON reads token_prices, skipping its non-tier keys (batch_size).
+func (b *ModelBilling) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		AutoDiscount float64                    `json:"auto_discount"`
+		TokenPrices  map[string]json.RawMessage `json:"token_prices"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	b.AutoDiscount = raw.AutoDiscount
+	b.TokenPrices = nil
+	for name, msg := range raw.TokenPrices {
+		var tier PriceTier
+		if json.Unmarshal(msg, &tier) != nil || tier.MaxPromptTokens == 0 {
+			continue
+		}
+		if b.TokenPrices == nil {
+			b.TokenPrices = map[string]PriceTier{}
+		}
+		b.TokenPrices[name] = tier
+	}
+	return nil
+}
+
+// DefaultPromptTokens is the prompt budget of the default (cheaper) tier when
+// the model also has a long_context tier, or 0 when there is only one tier.
+func (m Model) DefaultPromptTokens() int {
+	if _, ok := m.Billing.TokenPrices["long_context"]; !ok {
+		return 0
+	}
+	return m.Billing.TokenPrices["default"].MaxPromptTokens
 }
 
 // ModelsResponse is the response from the Copilot models API.

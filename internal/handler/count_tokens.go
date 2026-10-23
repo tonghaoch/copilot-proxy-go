@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -16,17 +17,18 @@ type CountTokensResponse struct {
 }
 
 // CountTokens handles POST /v1/messages/count_tokens.
-// It translates the Anthropic payload to OpenAI format, then estimates
-// the token count using a simple heuristic (chars/4 approximation)
-// since full tiktoken support requires a separate Go library.
+// It forwards to Copilot's count_tokens for an exact count and falls back to
+// a chars/4 estimate when that fails.
 func CountTokens(w http.ResponseWriter, r *http.Request) {
 	defaultHandler.CountTokens(w, r)
 }
 
 func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	body, err := io.ReadAll(r.Body)
 	var req AnthropicRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var raw map[string]any
+	if err != nil || json.Unmarshal(body, &req) != nil || json.Unmarshal(body, &raw) != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(CountTokensResponse{InputTokens: 1})
 		return
@@ -36,6 +38,12 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 
 	// Translate Claude Code-style names → Copilot IDs.
 	req.Model = ResolveCopilotModel(req.Model)
+
+	if count, ok := h.upstreamTokenCount(r, raw, req.Model, anthropicBeta); ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CountTokensResponse{InputTokens: count})
+		return
+	}
 
 	model := h.state.FindModel(req.Model)
 
@@ -52,6 +60,29 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(CountTokensResponse{InputTokens: count})
+}
+
+// upstreamTokenCount asks Copilot for the exact count. Copilot's count_tokens
+// accepts every chat model, not only Claude, and the chars/4 estimate below
+// undercounts by 25-60%, so it is only the fallback when this call fails.
+func (h *Handler) upstreamTokenCount(r *http.Request, raw map[string]any, model, beta string) (int, bool) {
+	raw["model"] = model
+	delete(raw, "stream")
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return 0, false
+	}
+	resp, err := h.copilot.ProxyCountTokens(r.Context(), body, filterBetaHeader(beta))
+	if err != nil {
+		slog.Debug("upstream count_tokens failed, estimating", "model", model, "error", err)
+		return 0, false
+	}
+	defer resp.Body.Close()
+	var out CountTokensResponse
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&out) != nil || out.InputTokens <= 0 {
+		return 0, false
+	}
+	return out.InputTokens, true
 }
 
 // estimateTokens estimates the total token count for a chat completion request.

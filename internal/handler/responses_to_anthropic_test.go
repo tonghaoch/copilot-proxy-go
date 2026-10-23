@@ -250,3 +250,20 @@ func TestResponsesUsageIncludesTotalTokens(t *testing.T) {
 		t.Fatalf("stream total_tokens = %d, want 14", usage.TotalTokens)
 	}
 }
+
+func TestAddCacheBreakpoints(t *testing.T) {
+	body := []byte(`{"system":"sys","tools":[{"name":"a"},{"name":"b"}],"messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"text","text":"y"}]}]}`)
+	var got map[string]any
+	if err := json.Unmarshal(addCacheBreakpoints(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	sys := got["system"].([]any)[0].(map[string]any)
+	tools := got["tools"].([]any)
+	blocks := got["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if sys["cache_control"] == nil || tools[1].(map[string]any)["cache_control"] == nil || blocks[1].(map[string]any)["cache_control"] == nil {
+		t.Fatalf("missing breakpoint: %s", addCacheBreakpoints(body))
+	}
+	if tools[0].(map[string]any)["cache_control"] != nil || blocks[0].(map[string]any)["cache_control"] != nil {
+		t.Fatal("only the last tool and last block should be marked")
+	}
+}

@@ -20,7 +20,7 @@ func TestAnthropicStreamStateCapturesFinalUsageOnlyChunk(t *testing.T) {
 	})
 
 	input, output, cached := stream.TokenCounts()
-	if input != 120 || output != 30 || cached != 40 {
+	if input != 80 || output != 30 || cached != 40 {
 		t.Fatalf("unexpected token counts: input=%d output=%d cached=%d", input, output, cached)
 	}
 }

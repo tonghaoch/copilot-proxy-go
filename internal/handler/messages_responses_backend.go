@@ -43,13 +43,7 @@ func (h *Handler) nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *htt
 		api.ForwardError(w, err)
 		return
 	}
-	if result.Usage != nil {
-		rec.InputTokens = int64(result.Usage.InputTokens)
-		rec.OutputTokens = int64(result.Usage.OutputTokens)
-		if result.Usage.InputTokensDetails != nil {
-			rec.CachedTokens = int64(result.Usage.InputTokensDetails.CachedTokens)
-		}
-	}
+	captureResponsesUsage(rec, result.Usage)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.anthropic.FromResponses(&result))
 }

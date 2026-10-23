@@ -57,9 +57,11 @@ func captureResponsesUsage(rec *state.RequestRecord, usage *ResponsesUsage) {
 	if usage == nil {
 		return
 	}
+	// Metrics use Anthropic convention: input excludes cached tokens.
 	rec.InputTokens = int64(usage.InputTokens)
 	rec.OutputTokens = int64(usage.OutputTokens)
 	if usage.InputTokensDetails != nil {
 		rec.CachedTokens = int64(usage.InputTokensDetails.CachedTokens)
+		rec.InputTokens -= rec.CachedTokens
 	}
 }

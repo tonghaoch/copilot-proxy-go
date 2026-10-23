@@ -134,6 +134,11 @@ func (c *Client) ProxyMessages(ctx context.Context, body []byte, betaHeader stri
 	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(ctx, isAgent, vision, betaHeader))
 }
 
+// ProxyCountTokens asks Copilot's Messages endpoint for an exact input token count.
+func (c *Client) ProxyCountTokens(ctx context.Context, body []byte, betaHeader string) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages/count_tokens", body, requestHeaders(ctx, false, false, betaHeader))
+}
+
 // ProxyResponses forwards a request to the Copilot Responses API.
 func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
 	return defaultClient.ProxyResponses(ctx, body, isAgent, vision)

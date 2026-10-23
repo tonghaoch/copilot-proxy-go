@@ -43,13 +43,7 @@ func (h *Handler) nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Res
 		api.ForwardError(w, err)
 		return
 	}
-	if ccResp.Usage != nil {
-		rec.InputTokens = int64(ccResp.Usage.PromptTokens)
-		rec.OutputTokens = int64(ccResp.Usage.CompletionTokens)
-		if ccResp.Usage.PromptTokensDetails != nil {
-			rec.CachedTokens = int64(ccResp.Usage.PromptTokensDetails.CachedTokens)
-		}
-	}
+	captureChatUsage(rec, ccResp.Usage)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.anthropic.FromChat(&ccResp))
 }

@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,10 @@ func TestResponsesContractMapsUpstreamRateLimit(t *testing.T) {
 		t.Fatalf("unexpected error body: %s", recorder.Body.String())
 	}
 }
+func (*contractCopilot) ProxyCountTokens(context.Context, []byte, string) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (*contractCopilot) ProxyEmbeddings(context.Context, []byte) (*http.Response, error) {
 	panic("unexpected embeddings request")
 }

@@ -83,7 +83,24 @@ type ChatCompletionM struct {
 type ChatCompletionUsage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens,omitempty"`
 	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// toAnthropic converts to Anthropic convention, where input_tokens excludes
+// cached tokens. Gemini reports reasoning outside completion_tokens (a
+// top-level reasoning_tokens) but counts it in total_tokens, so output is
+// taken from total-prompt when that is larger.
+func (u *ChatCompletionUsage) toAnthropic() AnthropicUsage {
+	cached := 0
+	if u.PromptTokensDetails != nil {
+		cached = u.PromptTokensDetails.CachedTokens
+	}
+	return AnthropicUsage{
+		InputTokens:          u.PromptTokens - cached,
+		OutputTokens:         max(u.CompletionTokens, u.TotalTokens-u.PromptTokens),
+		CacheReadInputTokens: cached,
+	}
 }
 
 type PromptTokensDetails struct {

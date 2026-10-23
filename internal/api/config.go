@@ -25,7 +25,7 @@ const (
 	GitHubScope           = "read:user"
 	FallbackVSCodeVersion = "1.109.3"
 	CopilotChatVersion    = "0.44.0"
-	GitHubAPIVersion      = "2025-10-01"
+	GitHubAPIVersion      = "2026-08-01"
 )
 
 // GetBaseURL returns the Copilot API base URL for the given account type.

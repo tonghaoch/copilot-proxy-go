@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
@@ -188,5 +189,35 @@ func TestThinkingRewriteHeader(t *testing.T) {
 	disabled := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "disabled"}}
 	if got := thinkingRewriteHeader(disabled, map[string]any{}); got != "" {
 		t.Fatalf("disabled should not be flagged, got %q", got)
+	}
+}
+
+func TestApplyCacheTTL(t *testing.T) {
+	parse := func(s string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	bare := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}`)
+	applyCacheTTL(bare, "1h")
+	out, _ := json.Marshal(bare)
+	if got := strings.Count(string(out), `"ttl":"1h"`); got != 2 {
+		t.Fatalf("want both breakpoints at 1h, got %s", out)
+	}
+
+	mixed := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}`)
+	applyCacheTTL(mixed, "1h")
+	out, _ = json.Marshal(mixed)
+	if strings.Count(string(out), `"ttl"`) != 1 {
+		t.Fatalf("explicit client ttl layout must be left alone, got %s", out)
+	}
+
+	off := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}]}`)
+	applyCacheTTL(off, "")
+	out, _ = json.Marshal(off)
+	if strings.Contains(string(out), "ttl") {
+		t.Fatalf("empty ttl must disable, got %s", out)
 	}
 }

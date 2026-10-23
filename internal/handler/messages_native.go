@@ -32,6 +32,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 
 	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
 	stripCacheControlScope(payload)
+	applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
 
 	// Strip tools Copilot rejects (e.g. image_generation)
 	stripUnsupportedToolsInMap(payload)
@@ -359,6 +360,8 @@ func filterBetaHeader(header string) string {
 	drop := map[string]bool{
 		"claude-code-20250219":  true,
 		"context-1m-2025-08-07": true,
+		// Copilot honours cache_control ttl natively and rejects this beta.
+		"extended-cache-ttl-2025-04-11": true,
 	}
 	parts := strings.Split(header, ",")
 	var filtered []string

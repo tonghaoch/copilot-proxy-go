@@ -13,14 +13,7 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 		Object: "response",
 		Model:  resp.Model,
 		Status: "completed",
-		Usage: &ResponsesUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
-	}
-	if resp.Usage.CacheReadInputTokens > 0 {
-		result.Usage.InputTokensDetails = &InputTokensDetails{CachedTokens: resp.Usage.CacheReadInputTokens}
+		Usage:  anthropicUsageToResponses(resp.Usage),
 	}
 	if resp.StopReason == "max_tokens" {
 		result.Status = "incomplete"
@@ -85,7 +78,7 @@ type responsesStreamWriter struct {
 	thinking   strings.Builder
 	signature  string
 	output     []ResponsesOutput
-	usage      ResponsesUsage
+	usage      AnthropicUsage
 	stopReason string
 	started    bool
 }
@@ -111,6 +104,18 @@ func (s *responsesStreamWriter) responseObject(status string) map[string]any {
 	}
 }
 
+// anthropicUsageToResponses converts Anthropic usage, whose input_tokens
+// excludes cache reads and writes, to Responses usage, whose input_tokens
+// includes them with the cache reads broken out as cached_tokens.
+func anthropicUsageToResponses(u AnthropicUsage) *ResponsesUsage {
+	input := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	usage := &ResponsesUsage{InputTokens: input, OutputTokens: u.OutputTokens, TotalTokens: input + u.OutputTokens}
+	if u.CacheReadInputTokens > 0 {
+		usage.InputTokensDetails = &InputTokensDetails{CachedTokens: u.CacheReadInputTokens}
+	}
+	return usage
+}
+
 // Handle processes one Anthropic SSE event (event type plus JSON data).
 func (s *responsesStreamWriter) Handle(eventType, data string) error {
 	switch eventType {
@@ -122,7 +127,8 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 			return err
 		}
 		s.respID = "resp_" + ev.Message.ID
-		s.usage.InputTokens = ev.Message.Usage.InputTokens
+		usage := &ev.Message.Usage
+		s.mergeUsage(&usage.InputTokens, &usage.CacheReadInputTokens, &usage.CacheCreationInputTokens)
 		if !s.started {
 			s.started = true
 			return s.send("response.created", map[string]any{"response": s.responseObject("in_progress")})
@@ -148,14 +154,14 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 		}
 		s.stopReason = ev.Delta.StopReason
 		s.usage.OutputTokens = ev.Usage.OutputTokens
+		s.mergeUsage(ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens, ev.Usage.CacheCreationInputTokens)
 	case "message_stop":
 		status := "completed"
 		if s.stopReason == "max_tokens" {
 			status = "incomplete"
 		}
 		resp := s.responseObject(status)
-		s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens
-		resp["usage"] = s.usage
+		resp["usage"] = *anthropicUsageToResponses(s.usage)
 		return s.send("response.completed", map[string]any{"response": resp})
 	case "error":
 		var ev StreamErrorEvent
@@ -163,6 +169,19 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 		return s.send("error", map[string]any{"code": ev.Error.Type, "message": ev.Error.Message})
 	}
 	return nil
+}
+
+// mergeUsage keeps the latest supplied input counts, including explicit zeros.
+func (s *responsesStreamWriter) mergeUsage(input, cacheRead, cacheCreation *int) {
+	if input != nil {
+		s.usage.InputTokens = *input
+	}
+	if cacheRead != nil {
+		s.usage.CacheReadInputTokens = *cacheRead
+	}
+	if cacheCreation != nil {
+		s.usage.CacheCreationInputTokens = *cacheCreation
+	}
 }
 
 func (s *responsesStreamWriter) openBlock(block ContentBlock) error {

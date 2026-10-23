@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tonghaoch/copilot-proxy-go/internal/config"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -34,36 +33,73 @@ var claudeDotRe = regexp.MustCompile(`^(claude-[a-z]+)-(\d+)(?:\.(\d+))?(?:-(.+)
 // Capture groups: family, major, minor (optional), suffix (optional).
 var claudeDashRe = regexp.MustCompile(`^(claude-[a-z]+)-(\d+)(?:-(\d+))?(?:-(.+))?$`)
 
-// is1MContextModel reports whether a model advertises a 1M-token context
-// window or is explicitly configured as supporting one.
-func is1MContextModel(m state.Model) bool {
-	return m.Capabilities.Limits.MaxContextWindowTokens >= 1000000 || config.Is1MContextModel(m.ID)
+// Claude Code recognises [1m] as a context-window hint. Both suffixes are
+// stripped before routing requests upstream.
+const (
+	claudeLongSuffix = "[1m]"
+	otherLongSuffix  = "[long]"
+)
+
+// ModelFlavour is one context-size variant of a Copilot model as clients see it.
+type ModelFlavour struct {
+	ID            string // public ID, e.g. claude-haiku-5-5 or claude-haiku-5-5[1m]
+	ContextWindow int    // prompt budget for this flavour
+	Long          bool   // true for the long-context (opt-in, pricier) tier
 }
 
-// ToClaudeCodeName converts Copilot's dotted Claude IDs to dashed form and
-// adds "[1m]" to any model with a context window of at least 1M tokens.
-// Non-Claude base IDs retain their original spelling.
-//
-// Claude Code uses the suffix as a context-window hint when accessing models
-// through the proxy. ResolveCopilotModel strips it before upstream routing.
-//
-//	claude-opus-4.8   (1M limits) → claude-opus-4-8[1m]
-//	claude-sonnet-4.5 (200K limits) → claude-sonnet-4-5
-//	gpt-6-astra      (1.05M limits) → gpt-6-astra[1m]
-func ToClaudeCodeName(m state.Model) string {
+// ModelFlavours lists the variants a model is offered as. A model priced in
+// two tiers yields a default entry capped at the cheaper tier's prompt budget
+// and a long-context entry with the full window, mirroring the official
+// clients' context-size picker. Copilot bills by actual prompt size, so the
+// default entry exists to give clients the smaller budget to stay within.
+func ModelFlavours(m state.Model) []ModelFlavour {
 	base := m.ID
 	if match := claudeDotRe.FindStringSubmatch(m.ID); match != nil {
-		family, major, minor, suffix := match[1], match[2], match[3], match[4]
-		base = family + "-" + major
-		if minor != "" {
-			base += "-" + minor
-		}
-		if suffix != "" {
-			base += "-" + suffix
+		base = dottedToDashed(match)
+	}
+	limits := m.Capabilities.Limits
+	suffix := otherLongSuffix
+	if limits.MaxContextWindowTokens >= 1000000 {
+		suffix = claudeLongSuffix
+	}
+	if def := m.DefaultPromptTokens(); def > 0 {
+		long := m.Billing.TokenPrices["long_context"].MaxPromptTokens
+		return []ModelFlavour{
+			{ID: base, ContextWindow: def},
+			{ID: base + suffix, ContextWindow: long, Long: true},
 		}
 	}
-	if is1MContextModel(m) {
-		base += "[1m]"
+	if suffix == claudeLongSuffix {
+		return []ModelFlavour{{ID: base + suffix, ContextWindow: promptBudget(limits), Long: true}}
+	}
+	return []ModelFlavour{{ID: base, ContextWindow: promptBudget(limits)}}
+}
+
+// promptBudget prefers max_prompt_tokens, the input a client may send.
+func promptBudget(l state.ModelLimits) int {
+	if l.MaxPromptTokens > 0 {
+		return l.MaxPromptTokens
+	}
+	return l.MaxContextWindowTokens
+}
+
+// ToClaudeCodeName returns a model's primary public ID: the long-context
+// flavour when there is one, since that is what the old single-entry list
+// exposed.
+func ToClaudeCodeName(m state.Model) string {
+	flavours := ModelFlavours(m)
+	return flavours[len(flavours)-1].ID
+}
+
+// dottedToDashed rebuilds a claudeDotRe match in Claude Code's dashed form.
+func dottedToDashed(match []string) string {
+	family, major, minor, suffix := match[1], match[2], match[3], match[4]
+	base := family + "-" + major
+	if minor != "" {
+		base += "-" + minor
+	}
+	if suffix != "" {
+		base += "-" + suffix
 	}
 	return base
 }
@@ -72,14 +108,14 @@ func ToClaudeCodeName(m state.Model) string {
 // any other client sends) into the actual Copilot model ID to call, by
 // translating Claude Code's dashed form back to Copilot's dotted form.
 //
-// Copilot no longer ships separate 1M-context model variants — context size is
-// now a per-model capability (capabilities.limits.max_context_window_tokens),
-// so there is nothing to route to. A trailing "[1m]" is stripped defensively
-// (Claude Code normally strips it itself; forwarding it to Copilot causes a
+// Context flavours share one upstream model: Copilot bills the long-context
+// tier by prompt size, not by a flag, so a trailing [1m] or [long] is simply
+// stripped (Claude Code strips [1m] itself; forwarding it to Copilot causes a
 // 400). The "context-1m-2025-08-07" beta header is likewise stripped from
 // forwarded requests by filterBetaHeader, but neither affects model selection.
 func ResolveCopilotModel(model string) string {
-	model = strings.TrimSuffix(model, "[1m]")
+	model = strings.TrimSuffix(model, claudeLongSuffix)
+	model = strings.TrimSuffix(model, otherLongSuffix)
 	return dashVersionToDot(model)
 }
 

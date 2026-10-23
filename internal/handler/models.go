@@ -53,24 +53,30 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 	entries := make([]ModelEntry, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, m := range models {
-		publicID := ToClaudeCodeName(m)
-		if _, dup := seen[publicID]; dup {
-			continue
+		for _, f := range ModelFlavours(m) {
+			if _, dup := seen[f.ID]; dup {
+				continue
+			}
+			seen[f.ID] = struct{}{}
+			limits := m.Capabilities.Limits
+			limits.MaxPromptTokens = f.ContextWindow
+			name := m.Name
+			if f.Long {
+				name += " (long context)"
+			}
+			entries = append(entries, ModelEntry{
+				ID:              f.ID,
+				Object:          "model",
+				Type:            "model",
+				Created:         0,
+				OwnedBy:         m.Vendor,
+				DisplayName:     name,
+				ContextWindow:   f.ContextWindow,
+				MaxOutputTokens: limits.MaxOutputTokens,
+				Limits:          &limits,
+				Policy:          m.Policy.State,
+			})
 		}
-		seen[publicID] = struct{}{}
-		limits := m.Capabilities.Limits
-		entries = append(entries, ModelEntry{
-			ID:              publicID,
-			Object:          "model",
-			Type:            "model",
-			Created:         0,
-			OwnedBy:         m.Vendor,
-			DisplayName:     m.Name,
-			ContextWindow:   limits.MaxContextWindowTokens,
-			MaxOutputTokens: limits.MaxOutputTokens,
-			Limits:          &limits,
-			Policy:          m.Policy.State,
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

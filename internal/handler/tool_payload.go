@@ -42,6 +42,45 @@ func stripCacheControlScope(v any) {
 	}
 }
 
+// applyCacheTTL sets ttl on every cache_control breakpoint, unless the client
+// already chose a ttl on any of them: Anthropic requires 1h breakpoints to
+// precede 5m ones, so mixing our default into an explicit layout could
+// produce an invalid request. Main agents and subagents both pass through
+// here, so both keep their prefixes warm for an hour by default.
+func applyCacheTTL(payload map[string]any, ttl string) {
+	if ttl == "" {
+		return
+	}
+	var breakpoints []map[string]any
+	explicit := false
+	var walk func(v any)
+	walk = func(v any) {
+		switch val := v.(type) {
+		case map[string]any:
+			if cc, ok := val["cache_control"].(map[string]any); ok {
+				if _, has := cc["ttl"]; has {
+					explicit = true
+				}
+				breakpoints = append(breakpoints, cc)
+			}
+			for _, child := range val {
+				walk(child)
+			}
+		case []any:
+			for _, item := range val {
+				walk(item)
+			}
+		}
+	}
+	walk(payload)
+	if explicit {
+		return
+	}
+	for _, cc := range breakpoints {
+		cc["ttl"] = ttl
+	}
+}
+
 var unsupportedTools = map[string]bool{
 	"image_generation": true,
 	"web_search":       true,

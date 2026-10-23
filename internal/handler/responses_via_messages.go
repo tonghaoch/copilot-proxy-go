@@ -24,6 +24,7 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 		api.ForwardError(w, err)
 		return
 	}
+	body = addCacheBreakpoints(body)
 	rec.Backend = "responses_via_messages"
 	slog.Info("responses request routed through Anthropic", "model", modelID, "stream", req.Stream)
 
@@ -94,3 +95,38 @@ func (c *anthropicCaptureWriter) Write(p []byte) (int, error) {
 // Flush exists so the Messages streaming backends, which type-assert for a
 // Flusher, still take the streaming path.
 func (c *anthropicCaptureWriter) Flush() {}
+
+// addCacheBreakpoints marks the system prompt, the last tool and the last
+// message with cache_control, as Claude Code does. Responses clients rely on
+// automatic prefix caching and send no breakpoints, and Anthropic caches
+// nothing without them, so every converted turn would pay full input price.
+// Only the native Messages backend reads the raw body; the others ignore it.
+func addCacheBreakpoints(body []byte) []byte {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	ephemeral := map[string]any{"type": "ephemeral"}
+	if s, ok := payload["system"].(string); ok && s != "" {
+		payload["system"] = []any{map[string]any{"type": "text", "text": s, "cache_control": ephemeral}}
+	}
+	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+		if last, ok := tools[len(tools)-1].(map[string]any); ok {
+			last["cache_control"] = ephemeral
+		}
+	}
+	if msgs, ok := payload["messages"].([]any); ok && len(msgs) > 0 {
+		if last, ok := msgs[len(msgs)-1].(map[string]any); ok {
+			if blocks, ok := last["content"].([]any); ok && len(blocks) > 0 {
+				if block, ok := blocks[len(blocks)-1].(map[string]any); ok {
+					block["cache_control"] = ephemeral
+				}
+			}
+		}
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}

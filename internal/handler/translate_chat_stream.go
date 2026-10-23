@@ -24,6 +24,7 @@ type AnthropicStreamState struct {
 	inputTokens   int
 	outputTokens  int
 	cachedTokens  int
+	hasUsage      bool
 	isClaudeModel bool
 }
 
@@ -258,37 +259,32 @@ func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
 			}},
 		})
 	}
+	usage := DeltaUsage{OutputTokens: s.outputTokens}
+	if s.hasUsage {
+		input, cached := s.inputTokens, s.cachedTokens
+		usage.InputTokens, usage.CacheReadInputTokens = &input, &cached
+	}
 	return append(events,
 		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
 			Type:  "message_delta",
 			Delta: MessageDelta{StopReason: stopReason},
-			Usage: DeltaUsage{OutputTokens: s.outputTokens},
+			Usage: usage,
 		}},
 		SSEEvent{Event: "message_stop", Data: MessageStopEvent{Type: "message_stop"}},
 	)
 }
 
-// captureUsage updates the metrics counters from any chunk carrying usage.
-// OpenAI commonly sends usage only in a final chunk with no choices, while
-// Anthropic needs non-cached input tokens in message_start. Keep the internal
-// input counter as the full prompt total so metrics remain consistent with the
-// non-streaming Chat, Responses, and native Messages paths.
+// captureUsage updates the counters from any chunk carrying usage. OpenAI
+// commonly sends usage only in a final chunk with no choices, after
+// message_start went out, so finish repeats input in message_delta.
 func (s *AnthropicStreamState) captureUsage(usage *ChatCompletionUsage) AnthropicUsage {
 	if usage == nil {
 		return AnthropicUsage{}
 	}
-	cached := 0
-	if usage.PromptTokensDetails != nil {
-		cached = usage.PromptTokensDetails.CachedTokens
-	}
-	s.inputTokens = usage.PromptTokens
-	s.outputTokens = usage.CompletionTokens
-	s.cachedTokens = cached
-	return AnthropicUsage{
-		InputTokens:          usage.PromptTokens - cached,
-		OutputTokens:         usage.CompletionTokens,
-		CacheReadInputTokens: cached,
-	}
+	u := usage.toAnthropic()
+	s.hasUsage = true
+	s.inputTokens, s.outputTokens, s.cachedTokens = u.InputTokens, u.OutputTokens, u.CacheReadInputTokens
+	return u
 }
 
 func (s *AnthropicStreamState) closeCurrentBlock() []SSEEvent {
