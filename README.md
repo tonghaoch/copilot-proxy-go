@@ -25,7 +25,7 @@ copilot-proxy-go is a local Go proxy that turns your GitHub Copilot subscription
 
 - **Claude Code ready** — interactive model selection and environment generation with `--claude-code`
 - **Codex CLI ready** — generates a Responses API configuration with `--codex`
-- **VPN/proxy friendly** — use `--proxy-env` to route GitHub/Copilot requests through `http_proxy`, `https_proxy`, or `all_proxy`
+- **VPN/proxy friendly** — use `start --proxy-env` to route GitHub/Copilot requests through `HTTP_PROXY` / `HTTPS_PROXY` (or their lowercase equivalents)
 - **OpenAI + Anthropic compatible** — supports Chat Completions, Responses, Messages, and Embeddings
 - **Copilot-backed** — uses your GitHub Copilot account as the backend model provider
 - **Token management** — GitHub OAuth device-code flow with automatic Copilot token refresh
@@ -33,6 +33,8 @@ copilot-proxy-go is a local Go proxy that turns your GitHub Copilot subscription
 ## Quick Start
 
 ### 1. Build
+
+Requires **Go 1.25 or later** and a GitHub account with access to Copilot.
 
 ```bash
 go build -o copilot-proxy-go .
@@ -44,7 +46,9 @@ go build -o copilot-proxy-go .
 ./copilot-proxy-go auth
 ```
 
-This opens a GitHub device-code flow in your browser. The token is saved to `~/.local/share/copilot-proxy-go/github_token`.
+The command prints a verification URL and a one-time code. Open the URL in your browser and enter the code to authorize access. It reuses a saved GitHub token if one exists; use `auth --force` to authenticate again. Run `./copilot-proxy-go debug` to see the token and configuration paths for your platform.
+
+This step is optional: `start` also authenticates when no saved token is available. If your network requires a proxy, follow [Behind a VPN or proxy](#behind-a-vpn-or-proxy) instead.
 
 ### 3. Start for your client
 
@@ -66,30 +70,37 @@ Generic OpenAI/Anthropic-compatible server:
 ./copilot-proxy-go start
 ```
 
-The proxy runs on `http://localhost:4141`. OpenAI-compatible clients should use `http://localhost:4141/v1` as the base URL.
+The proxy binds to `127.0.0.1:4141` by default. OpenAI-compatible clients should use `http://127.0.0.1:4141/v1` as the base URL; Anthropic-compatible clients should use `http://127.0.0.1:4141`.
+
+The setup flags print a client launch command and try to copy it to your clipboard. Keep the proxy running, then run that command in another terminal. They do not launch or install the client, and `--claude-code` and `--codex` cannot be used together.
 
 ### Behind a VPN or proxy
 
 If GitHub or Copilot requires a proxy in your network, export your proxy variables and start with `--proxy-env`:
 
 ```bash
-export https_proxy=http://127.0.0.1:7890 \
-  http_proxy=http://127.0.0.1:7890 \
-  all_proxy=socks5://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,::1
+export no_proxy="$NO_PROXY"
 
 ./copilot-proxy-go start --proxy-env
 ```
+
+Only `start` supports `--proxy-env`; without it, upstream requests ignore proxy environment variables. `ALL_PROXY` / `all_proxy` is not supported. If authentication requires a proxy, skip the separate `auth` step: `start --proxy-env` also runs the device-code flow when no saved token exists. You can combine it with `--claude-code` or `--codex`.
 
 ## Features
 
 - **Multi-API support** — Chat Completions, Messages (Anthropic), Responses, Embeddings
 - **Automatic translation** — routes Anthropic requests to the best available backend (native Messages API → Responses API → Chat Completions)
-- **Extended thinking** — full support for Claude thinking/reasoning blocks with interleaved thinking protocol
+- **Thinking/reasoning support** — translates thinking/reasoning blocks where supported; behavior and signature compatibility depend on the model and backend
 - **Streaming** — SSE streaming with proper event translation across all API formats
-- **Quota optimization** — auto-routes compact/warmup requests to smaller models to save premium quota
+- **Quota optimization** — routes detected Claude Code compact/warmup requests on `/v1/messages` to the configured `smallModel` (default: `gpt-5-mini`); `compactUseSmallModel` controls compact routing
 - **Local dashboard** — view usage, request metrics, session state, and quota information in your browser
 
 ## Dashboard
+
+Open `http://127.0.0.1:4141/dashboard` while the proxy is running. Local request metrics are kept in memory and reset on restart; Copilot quota is fetched from upstream.
 
 <img src="demo/copilot-proxy-dashboard.png" alt="Dashboard" width="500" />
 
@@ -99,13 +110,21 @@ export https_proxy=http://127.0.0.1:7890 \
 ./copilot-proxy-go start --claude-code
 ```
 
-This interactively selects models and generates the environment variables for Claude Code. Or set them manually:
+This interactively selects primary and small/fast models, saves the small model to the proxy configuration, and generates a command to run in another terminal. Use the model picker or `/models` to find models available to your account. Claude model versions are exposed in Claude Code's dashed form; models reporting a context window of at least 1,000,000 tokens also get a `[1m]` hint. This hint reflects the reported capability, not a context-window upgrade.
+
+Or set the variables manually (Bash/Zsh):
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:4141
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4141
 export ANTHROPIC_AUTH_TOKEN=copilot-proxy
-export ANTHROPIC_MODEL=claude-sonnet-4
+export ANTHROPIC_MODEL='<primary-model-id>'  # Choose from /models or use --claude-code.
 export ANTHROPIC_SMALL_FAST_MODEL=gpt-5-mini
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$ANTHROPIC_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ANTHROPIC_SMALL_FAST_MODEL"
+export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export NO_PROXY=localhost,127.0.0.1,::1
+export no_proxy="$NO_PROXY"
 claude
 ```
 
@@ -115,7 +134,7 @@ claude
 ./copilot-proxy-go start --codex
 ```
 
-This interactively selects a Responses-capable model and generates a Codex command. Or set it manually:
+This interactively selects a Responses-capable model and generates a Codex command, including the model's context window when reported by Copilot. Or set it manually (Bash/Zsh; replace the example model with one available to your account that supports `/responses`):
 
 ```bash
 export CODEX_API_KEY=copilot-proxy
@@ -130,19 +149,34 @@ codex \
   -c 'model_providers.copilot-proxy.wire_api="responses"'
 ```
 
+## Configuration and API Keys
+
+Configuration is stored in `config.json` in the application data directory, alongside `github_token`:
+
+- **macOS:** `~/Library/Application Support/copilot-proxy-go/`
+- **Linux:** `$XDG_DATA_HOME/copilot-proxy-go/`, or `~/.local/share/copilot-proxy-go/` when unset
+- **Windows:** `%LOCALAPPDATA%\copilot-proxy-go\`, or `~\AppData\Local\copilot-proxy-go\` when unset
+
+Use `./copilot-proxy-go debug` to see the resolved paths. `smallModel` chooses the compact/warmup routing target; `compactUseSmallModel` enables compact routing and does not affect warmup routing.
+
+API-key authentication is disabled when `auth.apiKeys` is empty. To enable it, set `auth.apiKeys` to a list of non-empty keys in `config.json`, then restart the proxy. Clients must send a configured key via `x-api-key` or `Authorization: Bearer <key>`. Replace the `copilot-proxy` placeholder in the manual client examples (and in the generated Claude Code command) with your key; Codex setup automatically uses the first configured key.
+
+Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS via a reverse proxy for access over untrusted networks. Authentication covers the dashboard and utility endpoints too; only `GET /` and `OPTIONS` requests bypass it. Without configured keys, `/token` is additionally restricted to loopback clients.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Health check |
 | `/v1/messages` | POST | Anthropic Messages API |
-| `/v1/messages/count_tokens` | POST | Token counting |
-| `/chat/completions` | POST | OpenAI Chat Completions |
-| `/v1/chat/completions` | POST | OpenAI Chat Completions |
-| `/responses` | POST | OpenAI Responses API |
-| `/v1/responses` | POST | OpenAI Responses API |
-| `/embeddings` | POST | Embeddings |
-| `/models` | GET | List available models |
-| `/v1/models` | GET | List available models |
+| `/v1/messages/count_tokens` | POST | Approximate input-token estimation (not model-tokenizer counts) |
+| `/chat/completions`, `/v1/chat/completions` | POST | OpenAI Chat Completions |
+| `/responses`, `/v1/responses` | POST | OpenAI Responses API |
+| `/embeddings`, `/v1/embeddings` | POST | Embeddings |
+| `/models`, `/v1/models` | GET | List available models |
+| `/token` | GET | Current Copilot bearer token (sensitive) |
+| `/usage` | GET | Copilot quota and usage |
+| `/api/stats` | GET | In-memory request metrics and latest session snapshot |
 | `/dashboard` | GET | Usage dashboard (web UI) |
 
 ## CLI Reference
@@ -159,7 +193,7 @@ Flags:
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)
-      --proxy-env             enable HTTP proxy from env vars (http_proxy/https_proxy/all_proxy)
+      --proxy-env             enable HTTP proxy from env vars (HTTP_PROXY/HTTPS_PROXY; lowercase also supported)
       --show-token            print tokens to console
   -v, --verbose               enable verbose/debug logging
 ```
@@ -172,7 +206,25 @@ copilot-proxy-go auth [flags]
 Flags:
       --force        force re-authentication
       --show-token   print token to console
+  -v, --verbose      enable verbose/debug logging
 ```
+
+### `check-usage` — Show Copilot quota and usage
+
+```bash
+./copilot-proxy-go check-usage
+```
+
+Requires a saved GitHub token. This command does not support `--proxy-env`; if you need a proxy, start the server with `--proxy-env` and use its `/usage` endpoint or dashboard instead.
+
+### `debug` — Show diagnostic information
+
+```bash
+./copilot-proxy-go debug
+./copilot-proxy-go debug --json
+```
+
+Prints version, platform, application paths, and whether token/config files exist, without printing token contents.
 
 ## License
 
