@@ -33,42 +33,33 @@ var claudeDotRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:\.
 // Capture groups: family, major, minor (optional), suffix (optional).
 var claudeDashRe = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)(?:-(\d+))?(?:-(.+))?$`)
 
-// standardClaudeContextTokens is the default Claude context window (200K). A
-// model whose reported context window exceeds this is an "extended context"
-// (1M) model, which Claude Code only budgets correctly when the model name
-// carries the [1m] suffix (see ToClaudeCodeName).
-const standardClaudeContextTokens = 200000
-
-// is1MContextModel reports whether a model advertises an extended (>200K)
-// context window in its capabilities.
+// is1MContextModel reports whether a model advertises at least a 1M-token
+// context window. A 256K or 400K model must not be advertised as supporting 1M.
 func is1MContextModel(m state.Model) bool {
-	return m.Capabilities.Limits.MaxContextWindowTokens > standardClaudeContextTokens
+	return m.Capabilities.Limits.MaxContextWindowTokens >= 1000000
 }
 
-// ToClaudeCodeName converts a Copilot model into the Claude Code-friendly
-// dashed form. Non-Claude IDs pass through unchanged.
+// ToClaudeCodeName converts Copilot's dotted Claude IDs to dashed form and
+// adds "[1m]" to any model with a context window of at least 1M tokens.
+// Non-Claude base IDs retain their original spelling.
 //
-// Extended-context Claude models get a "[1m]" suffix. Claude Code treats our
-// proxy as an LLM gateway and can't verify 1M support, so it budgets a 200K
-// window unless the model name carries [1m]; it strips the suffix locally
-// before sending, so the proxy still receives a clean ID.
+// Claude Code uses the suffix as a context-window hint when accessing models
+// through the proxy. ResolveCopilotModel strips it before upstream routing.
 //
 //	claude-opus-4.8   (1M limits) → claude-opus-4-8[1m]
 //	claude-sonnet-4.5 (200K limits) → claude-sonnet-4-5
-//	claude-opus-4.7-high          → claude-opus-4-7-high
+//	gpt-6-astra      (1.05M limits) → gpt-6-astra[1m]
 func ToClaudeCodeName(m state.Model) string {
-	match := claudeDotRe.FindStringSubmatch(m.ID)
-	if match == nil {
-		return m.ID
-	}
-	family, major, minor, suffix := match[1], match[2], match[3], match[4]
-
-	base := family + "-" + major
-	if minor != "" {
-		base += "-" + minor
-	}
-	if suffix != "" {
-		base += "-" + suffix
+	base := m.ID
+	if match := claudeDotRe.FindStringSubmatch(m.ID); match != nil {
+		family, major, minor, suffix := match[1], match[2], match[3], match[4]
+		base = family + "-" + major
+		if minor != "" {
+			base += "-" + minor
+		}
+		if suffix != "" {
+			base += "-" + suffix
+		}
 	}
 	if is1MContextModel(m) {
 		base += "[1m]"

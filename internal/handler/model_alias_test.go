@@ -24,7 +24,13 @@ func TestToClaudeCodeName(t *testing.T) {
 		{"reasoning suffix preserved, no 1m", modelWithContext("claude-opus-4.7-high", 200000), "claude-opus-4-7-high"},
 		{"reasoning suffix preserved, with 1m", modelWithContext("claude-opus-4.7-high", 1000000), "claude-opus-4-7-high[1m]"},
 		{"no minor version", modelWithContext("claude-sonnet-4", 200000), "claude-sonnet-4"},
-		{"non-claude passes through unchanged", modelWithContext("gpt-5.5", 1050000), "gpt-5.5"},
+		{"non-claude 1M context gets suffix", modelWithContext("gpt-5.5", 1050000), "gpt-5.5[1m]"},
+		{"astra 1M context gets suffix", modelWithContext("gpt-6-astra", 1050000), "gpt-6-astra[1m]"},
+		{"exactly 1M gets suffix", modelWithContext("gpt-6-luna", 1000000), "gpt-6-luna[1m]"},
+		{"400K must not advertise 1M", modelWithContext("gpt-5.3-codex", 400000), "gpt-5.3-codex"},
+		{"below 1M stays plain", modelWithContext("test-model", 999999), "test-model"},
+		{"unknown context stays plain", modelWithContext("gpt-6-astra", 0), "gpt-6-astra"},
+		{"claude below 1M stays plain", modelWithContext("claude-opus-4.8", 400000), "claude-opus-4-8"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,6 +52,7 @@ func TestResolveCopilotModel(t *testing.T) {
 		{"claude-sonnet-4", "claude-sonnet-4"},
 		{"claude-opus-4-7-high", "claude-opus-4.7-high"},
 		{"gpt-5.5", "gpt-5.5"}, // non-claude unchanged
+		{"gpt-6-astra[1m]", "gpt-6-astra"},
 	}
 	for _, tt := range tests {
 		if got := ResolveCopilotModel(tt.in); got != tt.want {

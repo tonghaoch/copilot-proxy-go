@@ -112,6 +112,11 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 		slog.Info("config.smallModel updated", "model", copilotSmall)
 	}
 
+	printGeneratedScript(buildClaudeCodeCommand(shell.Detect(), port, primaryModel, smallModel))
+	return nil
+}
+
+func buildClaudeCodeCommand(shellType shell.ShellType, port int, primaryModel, smallModel string) string {
 	vars := []shell.EnvVar{
 		{Key: "ANTHROPIC_BASE_URL", Value: fmt.Sprintf("http://localhost:%d", port)},
 		{Key: "ANTHROPIC_AUTH_TOKEN", Value: "copilot-proxy"},
@@ -122,8 +127,7 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 		{Key: "DISABLE_NON_ESSENTIAL_MODEL_CALLS", Value: "1"},
 		{Key: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", Value: "1"},
 	}
-	printGeneratedScript(shell.GenerateExportScript(shell.Detect(), vars, "claude"))
-	return nil
+	return shell.GenerateExportScript(shellType, vars, "claude")
 }
 
 func printGeneratedScript(script string) {
