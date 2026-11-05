@@ -146,6 +146,10 @@ type MessageDelta struct {
 
 type DeltaUsage struct {
 	OutputTokens int `json:"output_tokens"`
+	// Optional cumulative updates: nil leaves the message_start counts intact,
+	// while a pointer to zero explicitly updates a count to zero.
+	InputTokens          *int `json:"input_tokens,omitempty"`
+	CacheReadInputTokens *int `json:"cache_read_input_tokens,omitempty"`
 }
 
 type MessageStopEvent struct {

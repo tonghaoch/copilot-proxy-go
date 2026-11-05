@@ -45,15 +45,20 @@ func (s *ResponsesStreamState) handleResponseCompleted(data string) ([]SSEEvent,
 		json.Unmarshal(event.Response, &result)
 	}
 	translated := translateResponsesResultToAnthropic(&result)
+	usage := DeltaUsage{OutputTokens: translated.Usage.OutputTokens}
 	if result.Usage != nil {
 		s.inputTokens = translated.Usage.InputTokens
 		s.outputTokens = translated.Usage.OutputTokens
 		s.cachedTokens = translated.Usage.CacheReadInputTokens
+		// Responses often reports usage only at completion. Send the final
+		// cumulative input/cache counts to clients as well as recording metrics.
+		usage.InputTokens = &translated.Usage.InputTokens
+		usage.CacheReadInputTokens = &translated.Usage.CacheReadInputTokens
 	}
 	events = append(events,
 		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
 			Type: "message_delta", Delta: MessageDelta{StopReason: translated.StopReason},
-			Usage: DeltaUsage{OutputTokens: translated.Usage.OutputTokens},
+			Usage: usage,
 		}},
 		SSEEvent{Event: "message_stop", Data: MessageStopEvent{Type: "message_stop"}},
 	)
