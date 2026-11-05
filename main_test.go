@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tonghaoch/copilot-proxy-go/internal/handler"
 	"github.com/tonghaoch/copilot-proxy-go/internal/shell"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -24,6 +25,35 @@ func TestResponsesCapableModelIDs(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}
+
+func TestBuildClaudeCodeCommandContextSuffix(t *testing.T) {
+	primary := state.Model{ID: "gpt-6-astra", Capabilities: state.ModelCapabilities{
+		Limits: state.ModelLimits{MaxContextWindowTokens: 1050000},
+	}}
+	for _, smallContext := range []int{400000, 1000000} {
+		small := state.Model{ID: "test-small", Capabilities: state.ModelCapabilities{
+			Limits: state.ModelLimits{MaxContextWindowTokens: smallContext},
+		}}
+		wantSmall := "test-small"
+		if smallContext >= 1000000 {
+			wantSmall += "[1m]"
+		}
+		cmd := buildClaudeCodeCommand(shell.Zsh, 4141, handler.ToClaudeCodeName(primary), handler.ToClaudeCodeName(small))
+		for _, check := range []string{
+			"ANTHROPIC_MODEL='gpt-6-astra[1m]'",
+			"ANTHROPIC_DEFAULT_SONNET_MODEL='gpt-6-astra[1m]'",
+			"ANTHROPIC_SMALL_FAST_MODEL='" + wantSmall + "'",
+			"ANTHROPIC_DEFAULT_HAIKU_MODEL='" + wantSmall + "'",
+		} {
+			if !strings.Contains(cmd, check) {
+				t.Errorf("expected command to contain %q, got %q", check, cmd)
+			}
+		}
+		if got := handler.ResolveCopilotModel(handler.ToClaudeCodeName(small)); got != small.ID {
+			t.Errorf("persisted small model = %q, want clean Copilot ID %q", got, small.ID)
 		}
 	}
 }
