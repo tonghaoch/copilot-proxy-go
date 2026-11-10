@@ -2,12 +2,19 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
+
+var errFinalChatUsage = errors.New("final chat usage received")
+
+const finalChatUsageWait = 2 * time.Second
 
 func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
 	ccReq, err := h.anthropic.ToChat(req, h.config.ExtraPrompt(normalizeModelName(req.Model)))
@@ -56,6 +63,9 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 	}
 	streamState := NewAnthropicStreamState(model)
 	var terminal []SSEEvent
+	var usageTimer *time.Timer
+	var usageTimedOut atomic.Bool
+	finalUsage := false
 	writeEvents := func(events []SSEEvent) error {
 		for _, event := range events {
 			if event.Event == "message_delta" || event.Event == "message_stop" {
@@ -73,8 +83,37 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return err
 		}
-		return writeEvents(streamState.TranslateChunk(&chunk))
+		if len(chunk.Choices) > 0 {
+			finalUsage = false
+		}
+		if chunk.Usage != nil && (len(chunk.Choices) == 0 || chunk.Choices[0].FinishReason != nil) {
+			finalUsage = true
+		}
+		if err := writeEvents(streamState.TranslateChunk(&chunk)); err != nil {
+			return err
+		}
+		if streamState.IsComplete() {
+			if finalUsage {
+				return errFinalChatUsage
+			}
+			if usageTimer == nil {
+				usageTimer = time.AfterFunc(finalChatUsageWait, func() {
+					usageTimedOut.Store(true)
+					resp.Body.Close()
+				})
+			}
+		}
+		return nil
 	})
+	if usageTimer != nil {
+		usageTimer.Stop()
+	}
+	if errors.Is(streamErr, errFinalChatUsage) {
+		streamErr = nil
+	} else if usageTimedOut.Load() {
+		slog.Warn("chat stream ended without final usage after finish_reason")
+		streamErr = nil
+	}
 	if streamErr != nil {
 		rec.Error = streamErr.Error()
 		slog.Error("streaming error", "error", streamErr)

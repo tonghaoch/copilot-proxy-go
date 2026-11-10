@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
@@ -37,7 +38,7 @@ func TestAnthropicStreamStateCapturesFinalUsageOnlyChunk(t *testing.T) {
 
 func TestChatStreamForwardsLateCacheUsage(t *testing.T) {
 	raw := strings.Join([]string{
-		`data: {"id":"x","model":"m","choices":[{"delta":{"content":"hi"}}]}`, "",
+		`data: {"id":"x","model":"m","choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":0}}`, "",
 		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, "",
 		`data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":7,"total_tokens":107,"prompt_tokens_details":{"cached_tokens":60}}}`, "",
 		`data: [DONE]`, "",
@@ -65,5 +66,26 @@ func TestChatStreamForwardsLateCacheUsage(t *testing.T) {
 	}
 	if rec.InputTokens != 40 || rec.CachedTokens != 60 || rec.OutputTokens != 7 {
 		t.Fatalf("recorded usage = %+v", rec)
+	}
+}
+
+func TestChatStreamTerminatesIfFinalUsageNeverArrives(t *testing.T) {
+	reader, writer := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer writer.Close()
+		io.WriteString(writer, "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		<-done
+	}()
+	defer close(done)
+	recorder := httptest.NewRecorder()
+	rec := &state.RequestRecord{}
+	start := time.Now()
+	New(Dependencies{}).streamChatToAnthropic(recorder, &http.Response{Body: reader}, "m", rec)
+	if elapsed := time.Since(start); elapsed > finalChatUsageWait+time.Second {
+		t.Fatalf("stream did not terminate after finish_reason: %s", elapsed)
+	}
+	if !strings.Contains(recorder.Body.String(), "event: message_stop") || rec.Error != "" {
+		t.Fatalf("unexpected terminal stream: %s; record=%+v", recorder.Body.String(), rec)
 	}
 }
