@@ -20,6 +20,8 @@ type AnthropicRequest struct {
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
 	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
 	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`
+
+	chatReasoningEffort string
 }
 
 type AnthropicMeta struct {
@@ -28,7 +30,7 @@ type AnthropicMeta struct {
 
 type ThinkingConfig struct {
 	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type OutputConfig struct {

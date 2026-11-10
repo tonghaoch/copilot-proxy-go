@@ -1,15 +1,18 @@
 package handler
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 )
 
 // responsesToAnthropic rewrites a Responses API request (what Codex sends) as
 // an Anthropic Messages request, so the Messages router can pick a backend for
-// any model. It also returns the names of freeform (custom) tools, whose calls
-// must go back to the client as custom_tool_call items.
-func responsesToAnthropic(payload map[string]any, model string) (*AnthropicRequest, map[string]bool, error) {
+// any model. Tool mappings restore custom types and namespaces in the reply.
+func responsesToAnthropic(payload map[string]any, model string) (*AnthropicRequest, responseTools, error) {
 	req := &AnthropicRequest{
 		Model:     model,
 		Stream:    rsBool(payload["stream"]),
@@ -25,12 +28,17 @@ func responsesToAnthropic(payload map[string]any, model string) (*AnthropicReque
 		req.TopP = &p
 	}
 	if reasoning, ok := payload["reasoning"].(map[string]any); ok {
-		if effort := rsStr(reasoning["effort"]); effort != "" && effort != "none" {
-			req.OutputConfig = &OutputConfig{Effort: rsEffort(effort)}
+		if effort := rsStr(reasoning["effort"]); effort != "" {
+			req.chatReasoningEffort = effort
+			if effort == "none" {
+				req.Thinking = &ThinkingConfig{Type: "disabled"}
+			} else {
+				req.OutputConfig = &OutputConfig{Effort: rsEffort(effort)}
+			}
 		}
 	}
 
-	c := &responsesConverter{custom: map[string]bool{}}
+	c := &responsesConverter{tools: responseTools{}}
 	if s := rsStr(payload["instructions"]); s != "" {
 		c.system = append(c.system, s)
 	}
@@ -40,7 +48,9 @@ func responsesToAnthropic(payload map[string]any, model string) (*AnthropicReque
 	case []any:
 		for _, raw := range input {
 			if item, ok := raw.(map[string]any); ok {
-				c.item(item)
+				if err := c.item(item); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 	}
@@ -64,29 +74,21 @@ func responsesToAnthropic(payload map[string]any, model string) (*AnthropicReque
 	}
 
 	if tools, ok := payload["tools"].([]any); ok {
-		for _, raw := range tools {
-			tool, ok := raw.(map[string]any)
-			if !ok {
+		if err := c.addTools(req, tools, ""); err != nil {
+			return nil, nil, err
+		}
+	}
+	if input, ok := payload["input"].([]any); ok {
+		for _, raw := range input {
+			item, ok := raw.(map[string]any)
+			if !ok || rsStr(item["type"]) != "additional_tools" {
 				continue
 			}
-			name := rsStr(tool["name"])
-			switch rsStr(tool["type"]) {
-			case "function":
-				req.Tools = append(req.Tools, AnthropicTool{
-					Name:        name,
-					Description: rsStr(tool["description"]),
-					InputSchema: rsSchema(tool["parameters"]),
-				})
-			case "custom":
-				// Freeform tools take a raw string, so expose them as one-field objects.
-				c.custom[name] = true
-				req.Tools = append(req.Tools, AnthropicTool{
-					Name:        name,
-					Description: rsStr(tool["description"]),
-					InputSchema: json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}`),
-				})
+			if tools, ok := item["tools"].([]any); ok {
+				if err := c.addTools(req, tools, ""); err != nil {
+					return nil, nil, err
+				}
 			}
-			// Hosted tools (web_search, local_shell, image_generation) have no Anthropic equivalent here and are dropped.
 		}
 	}
 
@@ -97,7 +99,81 @@ func responsesToAnthropic(payload map[string]any, model string) (*AnthropicReque
 		}
 		req.ToolChoice = raw
 	}
-	return req, c.custom, nil
+	return req, c.tools, nil
+}
+
+type responseTool struct {
+	name      string
+	namespace string
+	custom    bool
+}
+
+type responseTools map[string]responseTool
+
+func (tools responseTools) lookup(name string) responseTool {
+	if tool, ok := tools[name]; ok {
+		return tool
+	}
+	return responseTool{name: name}
+}
+
+// Namespaces need a stable, Anthropic-compatible name for history replay.
+func rsToolName(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	sum := sha256.Sum256([]byte(namespace + "\x00" + name))
+	return fmt.Sprintf("ns_%x", sum[:16])
+}
+
+func (c *responsesConverter) addTools(req *AnthropicRequest, tools []any, namespace string) error {
+	for _, raw := range convertLocalShellTools(tools) {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind := rsStr(tool["type"])
+		name := rsStr(tool["name"])
+		if kind == "namespace" {
+			if name == "" || namespace != "" {
+				return api.InvalidRequest("invalid tool namespace", nil)
+			}
+			nested, _ := tool["tools"].([]any)
+			if err := c.addTools(req, nested, name); err != nil {
+				return err
+			}
+			continue
+		}
+		if kind != "function" && kind != "custom" {
+			continue
+		}
+		if name == "" {
+			return api.InvalidRequest("tool name is required", nil)
+		}
+		alias := rsToolName(namespace, name)
+		info := responseTool{name: name, namespace: namespace, custom: kind == "custom"}
+		if existing, ok := c.tools[alias]; ok {
+			if existing != info {
+				return api.InvalidRequest("tool names collide after translation", nil)
+			}
+			continue
+		}
+		c.tools[alias] = info
+		schema := rsSchema(tool["parameters"])
+		if info.custom {
+			schema = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}`)
+		}
+		description := rsStr(tool["description"])
+		if namespace != "" {
+			description = fmt.Sprintf("Tool %s.%s. %s", namespace, name, description)
+		}
+		req.Tools = append(req.Tools, AnthropicTool{
+			Name:        alias,
+			Description: description,
+			InputSchema: schema,
+		})
+	}
+	return nil
 }
 
 // rsEffort maps Responses reasoning effort onto Anthropic's vocabulary.
@@ -120,8 +196,11 @@ func rsToolChoice(raw any) map[string]any {
 			return map[string]any{"type": "none"}
 		}
 	case map[string]any:
-		if rsStr(choice["type"]) == "function" {
-			return map[string]any{"type": "tool", "name": rsStr(choice["name"])}
+		if rsStr(choice["type"]) == "function" || rsStr(choice["type"]) == "custom" {
+			return map[string]any{"type": "tool", "name": rsToolName(rsStr(choice["namespace"]), rsStr(choice["name"]))}
+		}
+		if rsStr(choice["type"]) == "local_shell" {
+			return map[string]any{"type": "tool", "name": "local_shell"}
 		}
 	}
 	return nil
@@ -133,7 +212,7 @@ func rsToolChoice(raw any) map[string]any {
 type responsesConverter struct {
 	system []string
 	turns  []rsTurn
-	custom map[string]bool
+	tools  responseTools
 }
 
 type rsTurn struct {
@@ -160,7 +239,7 @@ func (c *responsesConverter) add(role string, block ContentBlock) {
 	last.blocks = append(last.blocks, block)
 }
 
-func (c *responsesConverter) item(item map[string]any) {
+func (c *responsesConverter) item(item map[string]any) error {
 	switch rsStr(item["type"]) {
 	case "", "message":
 		role := rsStr(item["role"])
@@ -170,7 +249,7 @@ func (c *responsesConverter) item(item map[string]any) {
 					c.system = append(c.system, b.Text)
 				}
 			}
-			return
+			return nil
 		}
 		if role != "assistant" {
 			role = "user"
@@ -182,7 +261,7 @@ func (c *responsesConverter) item(item map[string]any) {
 		c.add("assistant", ContentBlock{
 			Type:  "tool_use",
 			ID:    rsStr(item["call_id"]),
-			Name:  rsStr(item["name"]),
+			Name:  rsToolName(rsStr(item["namespace"]), rsStr(item["name"])),
 			Input: rsArgs(rsStr(item["arguments"])),
 		})
 	case "custom_tool_call":
@@ -190,20 +269,24 @@ func (c *responsesConverter) item(item map[string]any) {
 		c.add("assistant", ContentBlock{
 			Type:  "tool_use",
 			ID:    rsStr(item["call_id"]),
-			Name:  rsStr(item["name"]),
+			Name:  rsToolName(rsStr(item["namespace"]), rsStr(item["name"])),
 			Input: input,
 		})
 	case "function_call_output", "custom_tool_call_output":
+		content, err := rsOutputContent(item["output"])
+		if err != nil {
+			return err
+		}
 		c.add("user", ContentBlock{
 			Type:      "tool_result",
 			ToolUseID: rsStr(item["call_id"]),
-			Content:   rsOutputText(item["output"]),
+			Content:   content,
 		})
 	case "reasoning":
 		// Anthropic only accepts thinking blocks with their signature, so unsigned reasoning is not replayed.
 		sig := rsStr(item["encrypted_content"])
 		if sig == "" {
-			return
+			return nil
 		}
 		var parts []string
 		if summary, ok := item["summary"].([]any); ok {
@@ -215,6 +298,7 @@ func (c *responsesConverter) item(item map[string]any) {
 		}
 		c.add("assistant", ContentBlock{Type: "thinking", Thinking: strings.Join(parts, "\n"), Signature: sig})
 	}
+	return nil
 }
 
 // messages marshals the accumulated turns into Anthropic message objects.
@@ -247,7 +331,7 @@ func rsContentBlocks(content any) []ContentBlock {
 				continue
 			}
 			switch rsStr(part["type"]) {
-			case "input_text", "output_text", "text":
+			case "", "input_text", "output_text", "text":
 				if text := rsStr(part["text"]); text != "" {
 					blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 				}
@@ -281,24 +365,34 @@ func rsImageSource(image any) *ImageSource {
 	return &ImageSource{Type: "url", URL: url}
 }
 
-// rsOutputText returns a tool_result body. Codex sends a plain string; a list
-// of text parts is joined so it still reads as text.
-func rsOutputText(output any) json.RawMessage {
-	text := ""
+// rsOutputContent preserves text and image parts in a tool result.
+func rsOutputContent(output any) (json.RawMessage, error) {
 	switch v := output.(type) {
 	case string:
-		text = v
+		return json.Marshal(v)
 	case []any:
-		var parts []string
 		for _, raw := range v {
-			if part, ok := raw.(map[string]any); ok {
-				parts = append(parts, rsStr(part["text"]))
+			part, ok := raw.(map[string]any)
+			if !ok {
+				return nil, api.InvalidRequest("unsupported tool output content", nil)
+			}
+			switch rsStr(part["type"]) {
+			case "", "input_text", "output_text", "text":
+			case "input_image":
+				if rsImageSource(part["image_url"]) == nil {
+					return nil, api.InvalidRequest("tool output images require an image_url on translated backends", nil)
+				}
+			default:
+				return nil, api.InvalidRequest("unsupported tool output content", nil)
 			}
 		}
-		text = strings.Join(parts, "\n")
+		blocks := rsContentBlocks(v)
+		if blocks == nil {
+			blocks = []ContentBlock{}
+		}
+		return json.Marshal(blocks)
 	}
-	raw, _ := json.Marshal(text)
-	return raw
+	return nil, api.InvalidRequest("tool output must be text or supported content parts", nil)
 }
 
 // rsArgs returns tool arguments as a JSON object, since tool_use input must be one.

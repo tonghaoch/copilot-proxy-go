@@ -8,7 +8,7 @@ import (
 
 // anthropicToResponsesResult converts a complete Anthropic message into the
 // Responses API result shape that Codex reads.
-func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]bool) (*ResponsesResult, error) {
+func anthropicToResponsesResult(resp *AnthropicResponse, customTools responseTools) (*ResponsesResult, error) {
 	result := &ResponsesResult{
 		ID:     "resp_" + resp.ID,
 		Object: "response",
@@ -56,8 +56,9 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 
 // toolCallItem builds a function_call item, or a custom_tool_call item when the
 // tool was declared as freeform. Freeform tools carry their raw input as {"input": "..."}.
-func toolCallItem(block ContentBlock, customTools map[string]bool) (ResponsesOutput, error) {
-	if customTools[block.Name] {
+func toolCallItem(block ContentBlock, customTools responseTools) (ResponsesOutput, error) {
+	tool := customTools.lookup(block.Name)
+	if tool.custom {
 		var args struct {
 			Input *string `json:"input"`
 		}
@@ -67,9 +68,9 @@ func toolCallItem(block ContentBlock, customTools map[string]bool) (ResponsesOut
 		if args.Input == nil {
 			return ResponsesOutput{}, fmt.Errorf("custom tool %q did not supply an input string", block.Name)
 		}
-		return ResponsesOutput{Type: "custom_tool_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: block.Name, Input: args.Input}, nil
+		return ResponsesOutput{Type: "custom_tool_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: tool.name, Namespace: tool.namespace, Input: args.Input}, nil
 	}
-	return ResponsesOutput{Type: "function_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: block.Name, Arguments: string(block.Input)}, nil
+	return ResponsesOutput{Type: "function_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: tool.name, Namespace: tool.namespace, Arguments: string(block.Input)}, nil
 }
 
 // responsesStreamWriter turns an Anthropic SSE stream into Responses SSE events.
@@ -79,28 +80,29 @@ type responsesStreamWriter struct {
 	emit        func(eventType string, data any) error
 	respID      string
 	model       string
-	customTools map[string]bool
+	customTools responseTools
 
-	seq        int
-	outputIdx  int
-	blockIndex int
-	block      *ContentBlock
-	itemID     string
-	text       strings.Builder
-	args       strings.Builder
-	customText strings.Builder
-	inputPos   int
-	inputEnd   bool
-	thinking   strings.Builder
-	signature  string
-	output     []ResponsesOutput
-	usage      AnthropicUsage
-	stopReason string
-	started    bool
-	finished   bool
+	seq           int
+	outputIdx     int
+	blockIndex    int
+	block         *ContentBlock
+	itemID        string
+	text          strings.Builder
+	args          strings.Builder
+	customText    strings.Builder
+	inputPos      int
+	inputEnd      bool
+	thinking      strings.Builder
+	signature     string
+	output        []ResponsesOutput
+	usage         AnthropicUsage
+	stopReason    string
+	invalidCustom error
+	started       bool
+	finished      bool
 }
 
-func newResponsesStreamWriter(emit func(string, any) error, model string, customTools map[string]bool) *responsesStreamWriter {
+func newResponsesStreamWriter(emit func(string, any) error, model string, customTools responseTools) *responsesStreamWriter {
 	return &responsesStreamWriter{emit: emit, model: model, customTools: customTools}
 }
 
@@ -158,6 +160,9 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 			return s.send("response.created", map[string]any{"response": s.responseObject("in_progress")})
 		}
 	case "content_block_start":
+		if s.invalidCustom != nil {
+			return s.invalidCustom
+		}
 		var ev ContentBlockStartEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			return err
@@ -196,6 +201,9 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 	case "message_stop":
 		if s.block != nil {
 			return fmt.Errorf("message stopped before content block %d", s.blockIndex)
+		}
+		if s.invalidCustom != nil && s.stopReason != "max_tokens" {
+			return s.invalidCustom
 		}
 		status := "completed"
 		event := "response.completed"
@@ -288,8 +296,12 @@ func (s *responsesStreamWriter) openBlock(block ContentBlock) error {
 		return nil
 	case "tool_use":
 		s.itemID = block.ID
-		item := map[string]any{"type": "function_call", "id": block.ID, "call_id": block.ID, "name": block.Name, "status": "in_progress", "arguments": ""}
-		if s.customTools[block.Name] {
+		tool := s.customTools.lookup(block.Name)
+		item := map[string]any{"type": "function_call", "id": block.ID, "call_id": block.ID, "name": tool.name, "status": "in_progress", "arguments": ""}
+		if tool.namespace != "" {
+			item["namespace"] = tool.namespace
+		}
+		if tool.custom {
 			item["type"] = "custom_tool_call"
 			item["input"] = ""
 			delete(item, "arguments")
@@ -314,10 +326,10 @@ func (s *responsesStreamWriter) delta(d Delta) error {
 		s.thinking.WriteString(d.Thinking)
 		return s.send("response.reasoning_summary_text.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "summary_index": 0, "delta": d.Thinking})
 	case "signature_delta":
-		s.signature = d.Signature
+		s.signature += d.Signature
 	case "input_json_delta":
 		s.args.WriteString(d.PartialJSON)
-		if s.customTools[s.block.Name] {
+		if s.customTools.lookup(s.block.Name).custom {
 			return s.streamCustomInput()
 		}
 		return s.send("response.function_call_arguments.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "delta": d.PartialJSON})
@@ -369,7 +381,13 @@ func (s *responsesStreamWriter) closeBlock() error {
 		var err error
 		item, err = toolCallItem(block, s.customTools)
 		if err != nil {
-			return err
+			if !s.customTools.lookup(block.Name).custom {
+				return err
+			}
+			s.invalidCustom = err
+			tool := s.customTools.lookup(block.Name)
+			partial := s.customText.String()
+			item = ResponsesOutput{Type: "custom_tool_call", ID: block.ID, Status: "incomplete", CallID: block.ID, Name: tool.name, Namespace: tool.namespace, Input: &partial}
 		}
 		item.ID = block.ID
 		if item.Type == "custom_tool_call" {

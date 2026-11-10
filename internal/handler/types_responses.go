@@ -70,6 +70,7 @@ type ResponsesOutput struct {
 	Content          []OutputContent `json:"content,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
+	Namespace        string          `json:"namespace,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
 	Input            *string         `json:"input,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`

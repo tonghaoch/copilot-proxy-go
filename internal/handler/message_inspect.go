@@ -50,6 +50,13 @@ func hasVision(messages []AnthropicMsg) bool {
 			if block.Type == "image" {
 				return true
 			}
+			if block.Type == "tool_result" {
+				for _, nested := range ParseMessageContent(block.Content) {
+					if nested.Type == "image" {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false

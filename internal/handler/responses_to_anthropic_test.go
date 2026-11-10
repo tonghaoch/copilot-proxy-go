@@ -29,8 +29,8 @@ func TestResponsesToAnthropicRoundTripsToolHistory(t *testing.T) {
 	if req.Model != "claude-opus-5.5" || req.MaxTokens != 512 {
 		t.Fatalf("model/max_tokens = %q/%d", req.Model, req.MaxTokens)
 	}
-	if len(custom) != 0 {
-		t.Fatalf("no custom tools expected, got %v", custom)
+	if custom["shell"].custom {
+		t.Fatalf("shell should not be a custom tool: %v", custom)
 	}
 	if string(req.System) != `"be brief"` {
 		t.Fatalf("system = %s", req.System)
@@ -74,7 +74,7 @@ func TestResponsesToAnthropicFreeformToolRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !custom["apply_patch"] {
+	if !custom["apply_patch"].custom {
 		t.Fatalf("apply_patch should be a custom tool, got %v", custom)
 	}
 	if !strings.Contains(string(req.Messages[0].Content), `"input":"*** patch"`) {
@@ -102,6 +102,206 @@ func TestResponsesToAnthropicFreeformToolRoundTrip(t *testing.T) {
 	}
 	if item["type"] != "custom_tool_call" || item["input"] != "*** end" || item["arguments"] != nil {
 		t.Fatalf("freeform output = %s", wire)
+	}
+}
+
+func TestResponsesReasoningEffortSurvivesBackendTranslation(t *testing.T) {
+	for _, effort := range []string{"none", "low", "high"} {
+		t.Run(effort, func(t *testing.T) {
+			req, _, err := responsesToAnthropic(map[string]any{
+				"input": "hello", "reasoning": map[string]any{"effort": effort},
+			}, "claude-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			chat, err := translateToOpenAI(req, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if chat.ReasoningEffort != effort {
+				t.Fatalf("chat effort = %q, want %q", chat.ReasoningEffort, effort)
+			}
+			if effort == "none" {
+				raw, err := json.Marshal(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(raw, &payload); err != nil {
+					t.Fatal(err)
+				}
+				applyAdaptiveThinkingInMap(payload, req, stubModels{adaptiveThinkingModel()}, stubConfig{"high"})
+				thinking := payload["thinking"].(map[string]any)
+				if thinking["type"] != "disabled" || thinking["budget_tokens"] != nil || payload["output_config"] != nil {
+					t.Fatalf("disabled thinking was not preserved: %s", raw)
+				}
+			} else if req.OutputConfig == nil || req.OutputConfig.Effort != effort {
+				t.Fatalf("native effort = %+v", req.OutputConfig)
+			}
+		})
+	}
+}
+
+func TestResponsesNamespacedAndAdditionalToolsRoundTrip(t *testing.T) {
+	payload := map[string]any{
+		"tools": []any{
+			map[string]any{"type": "local_shell"},
+			map[string]any{"type": "function", "name": "exec", "parameters": map[string]any{"type": "object"}},
+		},
+		"tool_choice": map[string]any{"type": "custom", "namespace": "functions", "name": "patch"},
+		"input": []any{
+			map[string]any{"type": "additional_tools", "tools": []any{
+				map[string]any{"type": "namespace", "name": "functions", "tools": []any{
+					map[string]any{"type": "function", "name": "exec", "parameters": map[string]any{"type": "object"}},
+					map[string]any{"type": "custom", "name": "patch"},
+				}},
+			}},
+			map[string]any{"type": "function_call", "namespace": "functions", "name": "exec", "call_id": "c1", "arguments": `{}`},
+			map[string]any{"type": "function_call_output", "call_id": "c1", "output": "done"},
+		},
+	}
+	req, tools, err := responsesToAnthropic(payload, "claude-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execAlias := rsToolName("functions", "exec")
+	patchAlias := rsToolName("functions", "patch")
+	if len(req.Tools) != 4 || req.Tools[0].Name != "local_shell" || req.Tools[1].Name != "exec" ||
+		req.Tools[2].Name != execAlias || req.Tools[3].Name != patchAlias {
+		t.Fatalf("translated tools = %+v", req.Tools)
+	}
+	var choice map[string]any
+	if err := json.Unmarshal(req.ToolChoice, &choice); err != nil {
+		t.Fatal(err)
+	}
+	if choice["type"] != "tool" || choice["name"] != patchAlias {
+		t.Fatalf("translated tool choice = %v", choice)
+	}
+	call := ParseMessageContent(req.Messages[0].Content)[0]
+	result := ParseMessageContent(req.Messages[1].Content)[0]
+	if call.Name != execAlias || call.ID != "c1" || result.ToolUseID != "c1" {
+		t.Fatalf("translated history: call=%+v result=%+v", call, result)
+	}
+	translated, err := anthropicToResponsesResult(&AnthropicResponse{Content: []ContentBlock{
+		{Type: "tool_use", ID: "f", Name: execAlias, Input: json.RawMessage(`{"x":1}`)},
+		{Type: "tool_use", ID: "p", Name: patchAlias, Input: json.RawMessage(`{"input":"patch body"}`)},
+	}}, tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := translated.Output; len(got) != 2 || got[0].Name != "exec" || got[0].Namespace != "functions" ||
+		got[1].Name != "patch" || got[1].Namespace != "functions" || got[1].Input == nil || *got[1].Input != "patch body" {
+		t.Fatalf("translated output = %+v", got)
+	}
+	var added map[string]any
+	stream := newResponsesStreamWriter(func(event string, data any) error {
+		if event == "response.output_item.added" {
+			added = data.(map[string]any)["item"].(map[string]any)
+		}
+		return nil
+	}, "claude-test", tools)
+	if err := stream.openBlock(ContentBlock{Type: "tool_use", ID: "p", Name: patchAlias}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.delta(Delta{Type: "input_json_delta", PartialJSON: `{"input":"patch body"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.closeBlock(); err != nil {
+		t.Fatal(err)
+	}
+	if added["name"] != "patch" || added["namespace"] != "functions" || stream.output[0].Namespace != "functions" {
+		t.Fatalf("streamed namespaced call = %v / %+v", added, stream.output)
+	}
+}
+
+func TestResponsesToolOutputImagesSurviveTranslation(t *testing.T) {
+	payload := map[string]any{"input": []any{
+		map[string]any{"type": "message", "role": "user", "content": "inspect"},
+		map[string]any{"type": "function_call", "name": "inspect", "call_id": "c1", "arguments": `{}`},
+		map[string]any{"type": "function_call_output", "call_id": "c1", "output": []any{
+			map[string]any{"type": "input_text", "text": "screenshot"},
+			map[string]any{"type": "input_image", "image_url": "https://example.test/image.png"},
+		}},
+	}}
+	req, _, err := responsesToAnthropic(payload, "claude-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detectVisionInResponses(payload) || !hasVision(req.Messages) {
+		t.Fatal("image in tool result was not detected")
+	}
+	toolResult := ParseMessageContent(req.Messages[2].Content)[0]
+	blocks := ParseMessageContent(toolResult.Content)
+	if len(blocks) != 2 || blocks[0].Text != "screenshot" || blocks[1].Source == nil || blocks[1].Source.URL != "https://example.test/image.png" {
+		t.Fatalf("tool result blocks = %+v", blocks)
+	}
+	chat, err := translateToOpenAI(req, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(chat.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"role":"tool","content":"screenshot"`) || !strings.Contains(string(wire), `"url":"https://example.test/image.png"`) {
+		t.Fatalf("chat lost tool text or image: %s", wire)
+	}
+}
+
+func TestResponsesStreamPreservesFragmentedSignature(t *testing.T) {
+	stream := newResponsesStreamWriter(func(string, any) error { return nil }, "claude-test", nil)
+	if err := stream.openBlock(ContentBlock{Type: "thinking", Signature: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"-", "second", "-third"} {
+		if err := stream.delta(Delta{Type: "signature_delta", Signature: fragment}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stream.closeBlock(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.output[0].EncryptedContent; got != "first-second-third" {
+		t.Fatalf("signature = %q", got)
+	}
+}
+
+func TestResponsesStreamTruncatedCustomInput(t *testing.T) {
+	for _, reason := range []string{"max_tokens", "tool_use"} {
+		t.Run(reason, func(t *testing.T) {
+			var lastEvent string
+			stream := newResponsesStreamWriter(func(event string, _ any) error {
+				lastEvent = event
+				return nil
+			}, "claude-test", responseTools{"patch": {name: "patch", custom: true}})
+			if err := stream.Handle("message_start", `{"message":{"id":"m"}}`); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Handle("content_block_start", `{"content_block":{"type":"tool_use","id":"p","name":"patch"}}`); err != nil {
+				t.Fatal(err)
+			}
+			delta, _ := json.Marshal(ContentBlockDeltaEvent{Delta: Delta{Type: "input_json_delta", PartialJSON: `{"input":"partial`}})
+			if err := stream.Handle("content_block_delta", string(delta)); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Handle("content_block_stop", `{}`); err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Handle("message_delta", `{"delta":{"stop_reason":"`+reason+`"},"usage":{}}`); err != nil {
+				t.Fatal(err)
+			}
+			err := stream.Handle("message_stop", `{}`)
+			if reason == "tool_use" {
+				if err == nil {
+					t.Fatal("malformed completed tool call was accepted")
+				}
+				return
+			}
+			if err != nil || lastEvent != "response.incomplete" || len(stream.output) != 1 ||
+				stream.output[0].Input == nil || *stream.output[0].Input != "partial" || stream.output[0].Status != "incomplete" {
+				t.Fatalf("truncated output = %+v, event=%s, error=%v", stream.output, lastEvent, err)
+			}
+		})
 	}
 }
 
@@ -195,7 +395,7 @@ func TestResponsesStreamWriterStreamsCustomToolInput(t *testing.T) {
 		}
 		return nil
 	}
-	stream := newResponsesStreamWriter(emit, "claude-test", map[string]bool{"apply_patch": true})
+	stream := newResponsesStreamWriter(emit, "claude-test", responseTools{"apply_patch": {name: "apply_patch", custom: true}})
 	if err := stream.Handle("message_start", `{"message":{"id":"m","usage":{"input_tokens":1}}}`); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +459,7 @@ func TestCustomToolInputHandlesJSONFragmentBoundaries(t *testing.T) {
 					doneInput = fields["input"].(string)
 				}
 				return nil
-			}, "claude-test", map[string]bool{"patch": true})
+			}, "claude-test", responseTools{"patch": {name: "patch", custom: true}})
 			if err := stream.openBlock(ContentBlock{Type: "tool_use", ID: "p", Name: "patch"}); err != nil {
 				t.Fatal(err)
 			}
@@ -282,7 +482,7 @@ func TestCustomToolRejectsMissingOrInvalidInput(t *testing.T) {
 	for _, raw := range []string{`{}`, `{"input":null}`, `{"input":42}`, `{"input":"unfinished`} {
 		_, err := anthropicToResponsesResult(&AnthropicResponse{Content: []ContentBlock{{
 			Type: "tool_use", Name: "patch", Input: json.RawMessage(raw),
-		}}}, map[string]bool{"patch": true})
+		}}}, responseTools{"patch": {name: "patch", custom: true}})
 		if err == nil {
 			t.Fatalf("invalid custom tool input accepted: %s", raw)
 		}
