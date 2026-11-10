@@ -75,19 +75,55 @@ type ModelPolicy struct {
 // official clients treat the tier as a prompt budget the user opts into.
 type ModelBilling struct {
 	AutoDiscount float64              `json:"auto_discount,omitempty"`
+	BatchSize    int64                `json:"-"`
 	TokenPrices  map[string]PriceTier `json:"-"`
 }
 
 // PriceTier is one context tier of a model's token pricing.
 type PriceTier struct {
-	MaxPromptTokens int     `json:"max_prompt_tokens"`
-	InputPrice      float64 `json:"input_price"`
-	OutputPrice     float64 `json:"output_price"`
-	CacheReadPrice  float64 `json:"cache_read_price"`
-	CacheWritePrice float64 `json:"cache_write_price"`
+	MaxPromptTokens   int     `json:"max_prompt_tokens"`
+	InputPrice        float64 `json:"input_price"`
+	OutputPrice       float64 `json:"output_price"`
+	CacheReadPrice    float64 `json:"cache_read_price"`
+	CacheWritePrice   float64 `json:"cache_write_price"`
+	CacheWrite1hPrice float64 `json:"cache_write_1h_price,omitempty"`
+
+	hasInputPrice, hasOutputPrice, hasCacheReadPrice bool
+	hasCacheWritePrice, hasCacheWrite1hPrice         bool
 }
 
-// UnmarshalJSON reads token_prices, skipping its non-tier keys (batch_size).
+func (p *PriceTier) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		MaxPromptTokens   int      `json:"max_prompt_tokens"`
+		InputPrice        *float64 `json:"input_price"`
+		OutputPrice       *float64 `json:"output_price"`
+		CacheReadPrice    *float64 `json:"cache_read_price"`
+		CacheWritePrice   *float64 `json:"cache_write_price"`
+		CacheWrite1hPrice *float64 `json:"cache_write_1h_price"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = PriceTier{MaxPromptTokens: raw.MaxPromptTokens}
+	if raw.InputPrice != nil {
+		p.InputPrice, p.hasInputPrice = *raw.InputPrice, true
+	}
+	if raw.OutputPrice != nil {
+		p.OutputPrice, p.hasOutputPrice = *raw.OutputPrice, true
+	}
+	if raw.CacheReadPrice != nil {
+		p.CacheReadPrice, p.hasCacheReadPrice = *raw.CacheReadPrice, true
+	}
+	if raw.CacheWritePrice != nil {
+		p.CacheWritePrice, p.hasCacheWritePrice = *raw.CacheWritePrice, true
+	}
+	if raw.CacheWrite1hPrice != nil {
+		p.CacheWrite1hPrice, p.hasCacheWrite1hPrice = *raw.CacheWrite1hPrice, true
+	}
+	return nil
+}
+
+// UnmarshalJSON reads the batch size and the model's pricing tiers.
 func (b *ModelBilling) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		AutoDiscount float64                    `json:"auto_discount"`
@@ -97,10 +133,20 @@ func (b *ModelBilling) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	b.AutoDiscount = raw.AutoDiscount
+	b.BatchSize = 0
 	b.TokenPrices = nil
 	for name, msg := range raw.TokenPrices {
+		if name == "batch_size" {
+			if err := json.Unmarshal(msg, &b.BatchSize); err != nil {
+				return err
+			}
+			continue
+		}
+		if name != "default" && name != "long_context" {
+			continue
+		}
 		var tier PriceTier
-		if json.Unmarshal(msg, &tier) != nil || tier.MaxPromptTokens == 0 {
+		if json.Unmarshal(msg, &tier) != nil {
 			continue
 		}
 		if b.TokenPrices == nil {

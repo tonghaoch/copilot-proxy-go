@@ -39,10 +39,6 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	rec.RoutedModel = modelID
 
 	model := h.state.FindModel(modelID)
-	if model != nil && !isResponsesSupported(model) {
-		h.responsesViaMessages(w, r, payload, modelID, model, rec)
-		return
-	}
 	if model == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -52,6 +48,17 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 				"type":    "invalid_request_error",
 			},
 		})
+		return
+	}
+	backend := "responses"
+	if !isResponsesSupported(model) {
+		backend = messagesBackend(model)
+	}
+	if !h.admitBudget(w, tracked, model, backend) {
+		return
+	}
+	if !isResponsesSupported(model) {
+		h.responsesViaMessages(w, r, payload, modelID, model, rec)
 		return
 	}
 
@@ -81,8 +88,10 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		api.ForwardError(w, err)
 		return
 	}
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}

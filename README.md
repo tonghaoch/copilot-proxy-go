@@ -181,6 +181,16 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 | `/api/stats` | GET | In-memory request metrics and latest session snapshot |
 | `/dashboard` | GET | Usage dashboard (web UI) |
 
+### Token-spend budget
+
+```bash
+./copilot-proxy-go start --budget-usd 200
+```
+
+The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. Streaming Chat Completions request a final usage report. `/api/stats` exposes the limit, estimate, in-flight count, and any reason admission is blocked.
+
+This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, retries, and charges outside this process are not included; restarting resets the estimate. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request, and incomplete upstream usage pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+
 ## CLI Reference
 
 ### `start` — Run the proxy server
@@ -192,6 +202,7 @@ Flags:
   -a, --account-type string   individual, business, or enterprise (default "individual")
   -c, --claude-code           interactive model selection for Claude Code
       --codex                 interactive model selection for Codex CLI
+      --budget-usd float      estimated per-process token-spend ceiling in USD
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)

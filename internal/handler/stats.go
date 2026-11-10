@@ -19,6 +19,7 @@ type statsResponse struct {
 	Session       *statsSession         `json:"session"`
 	Recent        []state.RequestRecord `json:"recent"`
 	Config        statsConfig           `json:"config"`
+	Budget        *state.BudgetSnapshot `json:"budget,omitempty"`
 }
 
 type statsTokens struct {
@@ -113,6 +114,10 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 			AuthEnabled:          len(apiKeys) > 0,
 			APIKeyCount:          len(apiKeys),
 		},
+	}
+	if h.budget != nil {
+		budget := h.budget.Snapshot()
+		resp.Budget = &budget
 	}
 
 	w.Header().Set("Content-Type", "application/json")

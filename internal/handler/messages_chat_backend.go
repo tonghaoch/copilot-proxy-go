@@ -22,6 +22,9 @@ func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Reque
 		api.ForwardError(w, err)
 		return
 	}
+	if h.budget != nil && ccReq.Stream {
+		ccReq.StreamOptions = &ChatStreamOptions{IncludeUsage: true}
+	}
 	body, err := json.Marshal(ccReq)
 	if err != nil {
 		api.ForwardError(w, err)
@@ -31,8 +34,10 @@ func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Reque
 	vision := hasVision(req.Messages)
 	slog.Info("chat completions backend", "model", ccReq.Model, "stream", ccReq.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyChatCompletionEx(r.Context(), body, isAgent, vision)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}
@@ -65,7 +70,6 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 	var terminal []SSEEvent
 	var usageTimer *time.Timer
 	var usageTimedOut atomic.Bool
-	finalUsage := false
 	writeEvents := func(events []SSEEvent) error {
 		for _, event := range events {
 			if event.Event == "message_delta" || event.Event == "message_stop" {
@@ -83,17 +87,12 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return err
 		}
-		if len(chunk.Choices) > 0 {
-			finalUsage = false
-		}
-		if chunk.Usage != nil && (len(chunk.Choices) == 0 || chunk.Choices[0].FinishReason != nil) {
-			finalUsage = true
-		}
+		captureChatStreamUsage(rec, &chunk)
 		if err := writeEvents(streamState.TranslateChunk(&chunk)); err != nil {
 			return err
 		}
 		if streamState.IsComplete() {
-			if finalUsage {
+			if rec.InputUsageKnown && rec.OutputUsageKnown {
 				return errFinalChatUsage
 			}
 			if usageTimer == nil {

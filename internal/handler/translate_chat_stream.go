@@ -15,19 +15,21 @@ type SSEEvent struct {
 // AnthropicStreamState tracks the state of the streaming translation
 // from OpenAI Chat Completion chunks to Anthropic SSE events.
 type AnthropicStreamState struct {
-	blockIndex    int
-	openBlockType string      // "text", "tool_use", "thinking", ""
-	toolCallMap   map[int]int // OpenAI tool call index -> Anthropic block index
-	deferredTools map[int]*deferredToolCall
-	deferred      []deferredChatPart
-	hasStarted    bool
-	completed     bool
-	model         string
-	inputTokens   int
-	outputTokens  int
-	cachedTokens  int
-	hasUsage      bool
-	isClaudeModel bool
+	blockIndex          int
+	openBlockType       string      // "text", "tool_use", "thinking", ""
+	toolCallMap         map[int]int // OpenAI tool call index -> Anthropic block index
+	deferredTools       map[int]*deferredToolCall
+	deferred            []deferredChatPart
+	hasStarted          bool
+	completed           bool
+	model               string
+	inputTokens         int
+	outputTokens        int
+	cachedTokens        int
+	cacheCreationTokens int
+	hasUsage            bool
+	hasCacheWriteUsage  bool
+	isClaudeModel       bool
 }
 
 type deferredToolCall struct {
@@ -352,6 +354,10 @@ func (s *AnthropicStreamState) deltaUsage() DeltaUsage {
 	if s.hasUsage {
 		input, cached := s.inputTokens, s.cachedTokens
 		usage.InputTokens, usage.CacheReadInputTokens = &input, &cached
+		if s.hasCacheWriteUsage {
+			writes := s.cacheCreationTokens
+			usage.CacheCreationInputTokens = &writes
+		}
 	}
 	return usage
 }
@@ -366,6 +372,8 @@ func (s *AnthropicStreamState) captureUsage(usage *ChatCompletionUsage) Anthropi
 	u := usage.toAnthropic()
 	s.hasUsage = true
 	s.inputTokens, s.outputTokens, s.cachedTokens = u.InputTokens, u.OutputTokens, u.CacheReadInputTokens
+	s.cacheCreationTokens = u.CacheCreationInputTokens
+	s.hasCacheWriteUsage = usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CacheWriteTokens != nil
 	return u
 }
 

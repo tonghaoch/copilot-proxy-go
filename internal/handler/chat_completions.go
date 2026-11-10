@@ -70,8 +70,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	rec.Initiator = initiatorStr(isAgent)
 	rec.Streaming = isStream
 
+	if !h.admitBudget(w, tracked, h.state.FindModel(modelName), "chat_completions") {
+		return
+	}
+	if h.budget != nil && isStream {
+		body, err = requireChatStreamUsage(body)
+		if err != nil {
+			api.ForwardError(w, api.InvalidRequest("invalid stream_options", err))
+			return
+		}
+	}
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyChatCompletionEx(r.Context(), body, isAgent, false)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}
@@ -96,7 +108,7 @@ func streamSSE(w http.ResponseWriter, body io.Reader, rec *state.RequestRecord) 
 		if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
 			var chunk ChatCompletionChunk
 			if json.Unmarshal([]byte(data), &chunk) == nil {
-				captureChatUsage(rec, chunk.Usage)
+				captureChatStreamUsage(rec, &chunk)
 			}
 		}
 		if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
@@ -134,4 +146,43 @@ func captureChatUsage(rec *state.RequestRecord, usage *ChatCompletionUsage) {
 	rec.InputTokens = int64(u.InputTokens)
 	rec.OutputTokens = int64(u.OutputTokens)
 	rec.CachedTokens = int64(u.CacheReadInputTokens)
+	rec.CacheCreationTokens = int64(u.CacheCreationInputTokens)
+	rec.CacheWriteUsageKnown = usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CacheWriteTokens != nil
+	rec.InputUsageKnown = usage.inputKnown
+	rec.OutputUsageKnown = usage.outputKnown
+}
+
+func captureChatStreamUsage(rec *state.RequestRecord, chunk *ChatCompletionChunk) {
+	if len(chunk.Choices) > 0 {
+		rec.OutputUsageKnown = false
+	}
+	if chunk.Usage != nil {
+		captureChatUsage(rec, chunk.Usage)
+		if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason == nil {
+			rec.OutputUsageKnown = false
+		}
+	}
+}
+
+func requireChatStreamUsage(body []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	var options map[string]json.RawMessage
+	if raw := payload["stream_options"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &options); err != nil {
+			return nil, err
+		}
+	}
+	if options == nil {
+		options = make(map[string]json.RawMessage)
+	}
+	options["include_usage"] = json.RawMessage("true")
+	rawOptions, err := json.Marshal(options)
+	if err != nil {
+		return nil, err
+	}
+	payload["stream_options"] = rawOptions
+	return json.Marshal(payload)
 }

@@ -87,6 +87,7 @@ func (defaultHTTPDoer) Do(req *http.Request) (*http.Response, error) {
 type Dependencies struct {
 	State     ApplicationState
 	Metrics   MetricsStore
+	Budget    *state.TokenBudget
 	Copilot   CopilotClient
 	HTTP      HTTPDoer
 	Anthropic AnthropicAdapter
@@ -98,6 +99,7 @@ type Dependencies struct {
 type Handler struct {
 	state     ApplicationState
 	metrics   MetricsStore
+	budget    *state.TokenBudget
 	copilot   CopilotClient
 	http      HTTPDoer
 	anthropic AnthropicAdapter
@@ -128,7 +130,7 @@ func New(deps Dependencies) *Handler {
 		deps.Anthropic = defaultAnthropicAdapter{models: deps.State, config: deps.Config}
 	}
 	return &Handler{
-		state: deps.State, metrics: deps.Metrics, copilot: deps.Copilot,
+		state: deps.State, metrics: deps.Metrics, budget: deps.Budget, copilot: deps.Copilot,
 		http: deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
 	}
 }

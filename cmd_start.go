@@ -33,6 +33,7 @@ func startCmd() *cobra.Command {
 		claudeCode  bool
 		codex       bool
 		proxyEnv    bool
+		budgetUSD   float64
 	)
 
 	cmd := &cobra.Command{
@@ -43,6 +44,14 @@ func startCmd() *cobra.Command {
 			defer cancelApp()
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
+			}
+			var budget *state.TokenBudget
+			if cmd.Flags().Changed("budget-usd") {
+				var err error
+				budget, err = state.NewTokenBudget(budgetUSD)
+				if err != nil {
+					return fmt.Errorf("--budget-usd: %w", err)
+				}
 			}
 
 			setupLogging(verbose)
@@ -135,10 +144,13 @@ func startCmd() *cobra.Command {
 			fmt.Println()
 			fmt.Printf("  Copilot API proxy is running on http://%s:%d\n", listenHost, port)
 			fmt.Printf("  Dashboard: http://%s:%d/dashboard?endpoint=http://%s:%d/usage\n", listenHost, port, listenHost, port)
+			if budget != nil {
+				fmt.Printf("  Estimated per-process token budget: $%g\n", budgetUSD)
+			}
 			fmt.Println()
 
 			endpoints := handler.New(handler.Dependencies{
-				State: state.Global, Metrics: state.Metrics, Copilot: copilotClient, HTTP: api.HTTPClient(),
+				State: state.Global, Metrics: state.Metrics, Budget: budget, Copilot: copilotClient, HTTP: api.HTTPClient(),
 			})
 			srv := server.NewWithHandler(server.Options{
 				Host: host,
@@ -174,6 +186,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
+	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0, "estimated per-process token-spend ceiling in USD")
 
 	return cmd
 }

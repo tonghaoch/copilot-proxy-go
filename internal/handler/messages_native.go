@@ -74,17 +74,20 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 
 	slog.Info("messages API (native)", "model", req.Model, "stream", req.Stream, "vision", vision)
 
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
 	if err != nil {
 		// If Copilot rejected our effort, cache the supported list, rewrite
 		// the payload, and retry exactly once. Anything else propagates.
 		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(r.Context(), h.copilot, err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
 			if retryErr != nil {
+				markUpstreamFailure(rec, retryErr)
 				api.ForwardError(w, retryErr)
 				return
 			}
 			resp = retryResp
 		} else {
+			markUpstreamFailure(rec, err)
 			api.ForwardError(w, err)
 			return
 		}
@@ -130,13 +133,55 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		io.Copy(w, tee)
 
 		// Parse usage from the buffered copy
-		var anthResp AnthropicResponse
-		if json.Unmarshal(buf.Bytes(), &anthResp) == nil {
-			rec.InputTokens = int64(anthResp.Usage.InputTokens)
-			rec.OutputTokens = int64(anthResp.Usage.OutputTokens)
-			rec.CachedTokens = int64(anthResp.Usage.CacheReadInputTokens)
-			rec.CacheCreationTokens = int64(anthResp.Usage.CacheCreationInputTokens)
+		var anthResp struct {
+			Usage *nativeTokenUsage `json:"usage"`
 		}
+		if json.Unmarshal(buf.Bytes(), &anthResp) == nil {
+			captureNativeUsage(rec, anthResp.Usage, true)
+		}
+	}
+}
+
+type nativeTokenUsage struct {
+	InputTokens              *int `json:"input_tokens"`
+	OutputTokens             *int `json:"output_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5m *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+func captureNativeUsage(rec *state.RequestRecord, usage *nativeTokenUsage, final bool) {
+	if usage == nil {
+		return
+	}
+	if usage.InputTokens != nil {
+		rec.InputTokens = int64(*usage.InputTokens)
+		rec.InputUsageKnown = true
+	}
+	if usage.OutputTokens != nil {
+		rec.OutputTokens = int64(*usage.OutputTokens)
+		if final {
+			rec.OutputUsageKnown = true
+		}
+	} else if final {
+		rec.OutputUsageKnown = false
+	}
+	if usage.CacheReadInputTokens != nil {
+		rec.CachedTokens = int64(*usage.CacheReadInputTokens)
+	}
+	if usage.CacheCreationInputTokens != nil {
+		if rec.CacheCreationTokens != int64(*usage.CacheCreationInputTokens) {
+			rec.CacheWriteDetailsKnown = false
+		}
+		rec.CacheCreationTokens = int64(*usage.CacheCreationInputTokens)
+	}
+	if usage.CacheCreation != nil && usage.CacheCreation.Ephemeral5m != nil && usage.CacheCreation.Ephemeral1h != nil {
+		rec.CacheWrite5mTokens = int64(*usage.CacheCreation.Ephemeral5m)
+		rec.CacheWrite1hTokens = int64(*usage.CacheCreation.Ephemeral1h)
+		rec.CacheWriteDetailsKnown = true
 	}
 }
 
@@ -145,26 +190,23 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
 	switch eventType {
 	case "message_start":
-		var evt MessageStartEvent
+		var evt struct {
+			Message struct {
+				Usage *nativeTokenUsage `json:"usage"`
+			} `json:"message"`
+		}
 		if json.Unmarshal([]byte(data), &evt) == nil {
-			rec.InputTokens = int64(evt.Message.Usage.InputTokens)
-			rec.CachedTokens = int64(evt.Message.Usage.CacheReadInputTokens)
-			rec.CacheCreationTokens = int64(evt.Message.Usage.CacheCreationInputTokens)
+			captureNativeUsage(rec, evt.Message.Usage, false)
 		}
 	case "message_delta":
-		var evt MessageDeltaEvent
-		if json.Unmarshal([]byte(data), &evt) == nil {
-			rec.OutputTokens = int64(evt.Usage.OutputTokens)
-			if evt.Usage.InputTokens != nil {
-				rec.InputTokens = int64(*evt.Usage.InputTokens)
-			}
-			if evt.Usage.CacheReadInputTokens != nil {
-				rec.CachedTokens = int64(*evt.Usage.CacheReadInputTokens)
-			}
-			if evt.Usage.CacheCreationInputTokens != nil {
-				rec.CacheCreationTokens = int64(*evt.Usage.CacheCreationInputTokens)
-			}
+		var evt struct {
+			Usage *nativeTokenUsage `json:"usage"`
 		}
+		if json.Unmarshal([]byte(data), &evt) == nil {
+			captureNativeUsage(rec, evt.Usage, true)
+		}
+	case "content_block_delta":
+		rec.OutputUsageKnown = false
 	}
 }
 

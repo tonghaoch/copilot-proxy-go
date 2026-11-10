@@ -7,14 +7,15 @@ import (
 
 func TestChatUsageToAnthropic(t *testing.T) {
 	tests := []struct {
-		name                  string
-		raw                   string
-		input, output, cached int
+		name                          string
+		raw                           string
+		input, output, cached, writes int
 	}{
-		{"plain", `{"prompt_tokens":10,"completion_tokens":5}`, 10, 5, 0},
-		{"cached excluded from input", `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":60}}`, 40, 5, 60},
-		{"gemini reasoning only in total", `{"prompt_tokens":2,"completion_tokens":0,"reasoning_tokens":5,"total_tokens":7}`, 2, 5, 0},
-		{"total smaller than completion", `{"prompt_tokens":2,"completion_tokens":9,"total_tokens":3}`, 2, 9, 0},
+		{"plain", `{"prompt_tokens":10,"completion_tokens":5}`, 10, 5, 0, 0},
+		{"cached excluded from input", `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":60}}`, 40, 5, 60, 0},
+		{"cache writes excluded from input", `{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":20}}`, 20, 5, 60, 20},
+		{"gemini reasoning only in total", `{"prompt_tokens":2,"completion_tokens":0,"reasoning_tokens":5,"total_tokens":7}`, 2, 5, 0, 0},
+		{"total smaller than completion", `{"prompt_tokens":2,"completion_tokens":9,"total_tokens":3}`, 2, 9, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -23,8 +24,8 @@ func TestChatUsageToAnthropic(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := u.toAnthropic()
-			if got.InputTokens != tt.input || got.OutputTokens != tt.output || got.CacheReadInputTokens != tt.cached {
-				t.Errorf("got %+v, want input=%d output=%d cached=%d", got, tt.input, tt.output, tt.cached)
+			if got.InputTokens != tt.input || got.OutputTokens != tt.output || got.CacheReadInputTokens != tt.cached || got.CacheCreationInputTokens != tt.writes {
+				t.Errorf("got %+v, want input=%d output=%d cached=%d writes=%d", got, tt.input, tt.output, tt.cached, tt.writes)
 			}
 		})
 	}
@@ -44,16 +45,16 @@ func messageDeltaUsage(t *testing.T, events []SSEEvent) DeltaUsage {
 func TestChatStreamMessageDeltaCarriesInput(t *testing.T) {
 	// message_start goes out on the first chunk, before usage is known, so the
 	// final message_delta must carry the input counts.
-	text, reason := "hi", "stop"
+	text, reason, writes := "hi", "stop", 20
 	s := NewAnthropicStreamState("m")
 	s.TranslateChunk(&ChatCompletionChunk{ID: "x", Model: "m",
 		Choices: []ChatCompletionChunkChoice{{Delta: ChatCompletionChunkDelta{Content: &text}}}})
 	events := s.TranslateChunk(&ChatCompletionChunk{ID: "x", Model: "m",
 		Choices: []ChatCompletionChunkChoice{{FinishReason: &reason}},
 		Usage: &ChatCompletionUsage{PromptTokens: 100, CompletionTokens: 7,
-			PromptTokensDetails: &PromptTokensDetails{CachedTokens: 60}}})
+			PromptTokensDetails: &PromptTokensDetails{CachedTokens: 60, CacheWriteTokens: &writes}}})
 	got := messageDeltaUsage(t, events)
-	if got.InputTokens == nil || *got.InputTokens != 40 || got.CacheReadInputTokens == nil || *got.CacheReadInputTokens != 60 || got.OutputTokens != 7 {
+	if got.InputTokens == nil || *got.InputTokens != 20 || got.CacheReadInputTokens == nil || *got.CacheReadInputTokens != 60 || got.CacheCreationInputTokens == nil || *got.CacheCreationInputTokens != 20 || got.OutputTokens != 7 {
 		t.Errorf("message_delta usage = %+v", got)
 	}
 }
@@ -90,12 +91,12 @@ func TestResponsesStreamMessageDeltaCarriesInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	events, err := s.TranslateEvent("response.completed", `{"response":{"status":"completed","output":[],
-		"usage":{"input_tokens":100,"output_tokens":7,"input_tokens_details":{"cached_tokens":60}}}}`)
+		"usage":{"input_tokens":100,"output_tokens":7,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":20}}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := messageDeltaUsage(t, events)
-	if got.InputTokens == nil || *got.InputTokens != 40 || got.CacheReadInputTokens == nil || *got.CacheReadInputTokens != 60 || got.OutputTokens != 7 {
+	if got.InputTokens == nil || *got.InputTokens != 20 || got.CacheReadInputTokens == nil || *got.CacheReadInputTokens != 60 || got.CacheCreationInputTokens == nil || *got.CacheCreationInputTokens != 20 || got.OutputTokens != 7 {
 		t.Errorf("message_delta usage = %+v", got)
 	}
 }
@@ -103,7 +104,8 @@ func TestResponsesStreamMessageDeltaCarriesInput(t *testing.T) {
 func TestAnthropicUsageToResponses(t *testing.T) {
 	got := anthropicUsageToResponses(AnthropicUsage{InputTokens: 10, OutputTokens: 5, CacheReadInputTokens: 60, CacheCreationInputTokens: 30})
 	if got.InputTokens != 100 || got.OutputTokens != 5 || got.TotalTokens != 105 ||
-		got.InputTokensDetails == nil || got.InputTokensDetails.CachedTokens != 60 {
+		got.InputTokensDetails == nil || got.InputTokensDetails.CachedTokens != 60 ||
+		got.InputTokensDetails.CacheWriteTokens == nil || *got.InputTokensDetails.CacheWriteTokens != 30 {
 		t.Errorf("got %+v", got)
 	}
 }
@@ -126,7 +128,8 @@ func TestResponsesStreamWriterUsage(t *testing.T) {
 		}
 	}
 	got := completed["response"].(map[string]any)["usage"].(ResponsesUsage)
-	if got.InputTokens != 100 || got.TotalTokens != 105 || got.InputTokensDetails.CachedTokens != 60 {
+	if got.InputTokens != 100 || got.TotalTokens != 105 || got.InputTokensDetails.CachedTokens != 60 ||
+		got.InputTokensDetails.CacheWriteTokens == nil || *got.InputTokensDetails.CacheWriteTokens != 30 {
 		t.Errorf("got %+v", got)
 	}
 }

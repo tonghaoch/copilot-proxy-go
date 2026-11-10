@@ -70,6 +70,9 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		rec.ThinkingBudget = req.Thinking.BudgetTokens
 	}
 
+	if !h.admitBudget(ww, tracked, model, messagesBackend(model)) {
+		return
+	}
 	if subagent != nil {
 		r = r.WithContext(service.WithSubagentInteraction(r.Context()))
 	}
@@ -80,17 +83,26 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 // its model: native Messages, Responses, or Chat Completions. Split out so the
 // Responses endpoint can reuse the router for models without /responses.
 func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord) {
-	if model != nil && isMessagesSupported(model) {
+	rec.Backend = messagesBackend(model)
+	switch rec.Backend {
+	case "messages":
 		slog.Info("routing to Messages API", "model", req.Model)
-		rec.Backend = "messages"
 		h.handleWithMessagesAPI(w, r, req, forceAgent, body, rec)
-	} else if model != nil && isResponsesSupported(model) {
+	case "responses":
 		slog.Info("routing to Responses API", "model", req.Model)
-		rec.Backend = "responses"
 		h.handleWithResponsesAPI(w, r, req, forceAgent, rec)
-	} else {
+	default:
 		slog.Info("routing to Chat Completions API", "model", req.Model)
-		rec.Backend = "chat_completions"
 		h.handleWithChatCompletions(w, r, req, forceAgent, rec)
 	}
+}
+
+func messagesBackend(model *state.Model) string {
+	if model != nil && isMessagesSupported(model) {
+		return "messages"
+	}
+	if model != nil && isResponsesSupported(model) {
+		return "responses"
+	}
+	return "chat_completions"
 }

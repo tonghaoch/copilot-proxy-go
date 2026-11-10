@@ -26,6 +26,15 @@ type RequestRecord struct {
 	LatencyMs           int64     `json:"latency_ms"`
 	StatusCode          int       `json:"status_code"`
 	Error               string    `json:"error,omitempty"`
+
+	UpstreamAttempted      bool  `json:"-"`
+	UpstreamRejected       bool  `json:"-"`
+	InputUsageKnown        bool  `json:"-"`
+	OutputUsageKnown       bool  `json:"-"`
+	CacheWrite5mTokens     int64 `json:"-"`
+	CacheWrite1hTokens     int64 `json:"-"`
+	CacheWriteDetailsKnown bool  `json:"-"`
+	CacheWriteUsageKnown   bool  `json:"-"`
 }
 
 // ClaudeMDFile represents an extracted CLAUDE.md file from the system prompt.

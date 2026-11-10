@@ -133,8 +133,11 @@ func (s *responsesStreamWriter) responseObject(status string) map[string]any {
 func anthropicUsageToResponses(u AnthropicUsage) *ResponsesUsage {
 	input := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 	usage := &ResponsesUsage{InputTokens: input, OutputTokens: u.OutputTokens, TotalTokens: input + u.OutputTokens}
-	if u.CacheReadInputTokens > 0 {
+	if u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
 		usage.InputTokensDetails = &InputTokensDetails{CachedTokens: u.CacheReadInputTokens}
+		if u.CacheCreationInputTokens > 0 {
+			usage.InputTokensDetails.CacheWriteTokens = &u.CacheCreationInputTokens
+		}
 	}
 	return usage
 }
