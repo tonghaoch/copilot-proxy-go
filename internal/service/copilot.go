@@ -271,14 +271,20 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 			return resp, nil
 		}
 		if isTokenExpired(resp.StatusCode) && !refreshedToken {
-			drainAndClose(resp.Body)
+			httpErr := api.NewHTTPError(resp)
+			resp.Body.Close()
+			httpErr.PriorAttemptUncertain = priorAttemptUncertain
 			refreshedToken = true
 			slog.Warn("upstream auth error; refreshing token", "path", path, "status", resp.StatusCode)
 			if c.refreshToken == nil {
-				return nil, fmt.Errorf("token refresh is not configured")
+				httpErr.Cause = fmt.Errorf("token refresh is not configured")
+				slog.Error("upstream token refresh failed", "error", httpErr.Cause)
+				return nil, httpErr
 			}
 			if err := c.refreshToken(); err != nil {
-				return nil, fmt.Errorf("token refresh failed: %w", err)
+				httpErr.Cause = fmt.Errorf("token refresh failed: %w", err)
+				slog.Error("upstream token refresh failed", "error", httpErr.Cause)
+				return nil, httpErr
 			}
 			continue
 		}
@@ -290,10 +296,15 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 				delay := retryDelay(resp, attempt, c.retry)
 				if delay <= c.retry.MaxRetryAfter {
 					retriedIncompleteBody = true
-					nextClient = freshConnectionClient(c.httpClient())
+					var ok bool
+					nextClient, ok = freshConnectionClient(c.httpClient())
+					if !ok {
+						return nil, httpErr
+					}
 					slog.Warn("retrying incomplete upstream upload", "path", path, "attempt", attempt+1, "delay", delay)
 					if err := c.retry.Wait(ctx, delay); err != nil {
-						return nil, fmt.Errorf("waiting to retry upstream request: %w", err)
+						httpErr.Cause = fmt.Errorf("waiting to retry upstream request: %w", err)
+						return nil, httpErr
 					}
 					continue
 				}
@@ -311,10 +322,21 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 					"path", path, "retry_after", delay)
 				return nil, httpErr
 			}
-			drainAndClose(resp.Body)
+			var rejected *api.HTTPError
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				rejected = api.NewHTTPError(resp)
+				rejected.PriorAttemptUncertain = priorAttemptUncertain
+				resp.Body.Close()
+			} else {
+				drainAndClose(resp.Body)
+			}
 			slog.Warn("retrying transient upstream response", "path", path, "status", resp.StatusCode,
 				"attempt", attempt+1, "delay", delay)
 			if err := c.retry.Wait(ctx, delay); err != nil {
+				if rejected != nil {
+					rejected.Cause = fmt.Errorf("waiting to retry upstream request: %w", err)
+					return nil, rejected
+				}
 				return nil, fmt.Errorf("waiting to retry upstream request: %w", err)
 			}
 			if resp.StatusCode >= http.StatusInternalServerError {
@@ -331,20 +353,24 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 	return nil, fmt.Errorf("upstream request retry exhausted")
 }
 
-func freshConnectionClient(doer HTTPDoer) HTTPDoer {
+func freshConnectionClient(doer HTTPDoer) (HTTPDoer, bool) {
 	client, ok := doer.(*http.Client)
 	if !ok {
-		return doer
+		return nil, false
 	}
-	transport, ok := client.Transport.(*http.Transport)
+	roundTripper := client.Transport
+	if roundTripper == nil {
+		roundTripper = http.DefaultTransport
+	}
+	transport, ok := roundTripper.(*http.Transport)
 	if !ok {
-		return doer
+		return nil, false
 	}
 	fresh := *client
 	freshTransport := transport.Clone()
 	freshTransport.DisableKeepAlives = true
 	fresh.Transport = freshTransport
-	return &fresh
+	return &fresh, true
 }
 
 func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
