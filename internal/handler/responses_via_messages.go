@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -29,18 +31,16 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 	rec.Backend = "responses_via_messages"
 	slog.Info("responses request routed through Anthropic", "model", modelID, "stream", req.Stream)
 
-	// The Messages backends write Anthropic-format output, so capture it and convert.
 	capture := &anthropicCaptureWriter{ResponseWriter: w, header: http.Header{}}
+	if req.Stream {
+		h.streamResponsesViaMessages(w, r, req, model, body, rec, capture, customTools)
+		return
+	}
 	h.dispatchMessages(capture, r, req, model, false, body, rec)
 
 	if capture.status >= 400 {
-		w.Header().Set("Content-Type", capture.header.Get("Content-Type"))
 		w.WriteHeader(capture.status)
 		w.Write(capture.buf.Bytes())
-		return
-	}
-	if req.Stream {
-		writeResponsesStreamFromAnthropic(w, capture.buf.Bytes(), modelID, customTools)
 		return
 	}
 	var resp AnthropicResponse
@@ -48,34 +48,75 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 		api.ForwardError(w, err)
 		return
 	}
-	result := anthropicToResponsesResult(&resp, customTools)
+	result, err := anthropicToResponsesResult(&resp, customTools)
+	if err != nil {
+		api.ForwardError(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }
 
-// writeResponsesStreamFromAnthropic replays a captured Anthropic SSE stream as
-// Responses SSE events.
-func writeResponsesStreamFromAnthropic(w http.ResponseWriter, raw []byte, modelID string, customTools map[string]bool) {
-	flusher, err := beginSSE(w)
-	if err != nil {
+func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, body []byte, rec *state.RequestRecord, capture *anthropicCaptureWriter, customTools map[string]bool) {
+	if _, ok := w.(http.Flusher); !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	reader, writer := io.Pipe()
+	capture.stream = writer
+	var flusher http.Flusher
 	emit := func(eventType string, data any) error {
+		if flusher == nil {
+			var err error
+			flusher, err = beginSSE(w)
+			if err != nil {
+				return err
+			}
+		}
 		return writeSSE(w, flusher, eventType, data)
 	}
-	stream := newResponsesStreamWriter(emit, modelID, customTools)
-	if err := readSSE(bytes.NewReader(raw), stream.Handle); err != nil {
+	stream := newResponsesStreamWriter(emit, req.Model, customTools)
+	done := make(chan error, 1)
+	go func() {
+		err := readSSE(reader, stream.Handle)
+		reader.CloseWithError(err)
+		done <- err
+	}()
+	h.dispatchMessages(capture, r, req, model, false, body, rec)
+	writer.Close()
+	err := <-done
+	if capture.status >= 400 {
+		w.WriteHeader(capture.status)
+		w.Write(capture.buf.Bytes())
+		return
+	}
+	if err != nil {
+		rec.Error = err.Error()
 		slog.Error("responses stream translation failed", "error", err)
+	}
+	if stream.finished {
+		return
+	}
+	if err == nil {
+		err = errors.New("upstream stream ended without a terminal event")
+		rec.Error = err.Error()
+	}
+	if flusher == nil {
+		api.ForwardError(w, &api.HTTPError{StatusCode: http.StatusBadGateway, Message: err.Error()})
+		return
+	}
+	if sendErr := stream.send("error", map[string]any{"code": "stream_error", "message": err.Error()}); sendErr != nil {
+		slog.Error("responses stream error could not be sent", "error", sendErr)
 	}
 }
 
-// anthropicCaptureWriter buffers the Messages backend output so it can be
-// converted. Status and headers are recorded; body bytes are kept in buf.
+// anthropicCaptureWriter buffers non-streaming output and forwards SSE to a pipe.
 type anthropicCaptureWriter struct {
 	http.ResponseWriter
 	header http.Header
 	status int
 	buf    bytes.Buffer
+	stream io.Writer
 }
 
 func (c *anthropicCaptureWriter) Header() http.Header { return c.header }
@@ -83,18 +124,22 @@ func (c *anthropicCaptureWriter) Header() http.Header { return c.header }
 func (c *anthropicCaptureWriter) WriteHeader(status int) {
 	if c.status == 0 {
 		c.status = status
+		for key, values := range c.header {
+			c.ResponseWriter.Header()[key] = append([]string(nil), values...)
+		}
 	}
 }
 
 func (c *anthropicCaptureWriter) Write(p []byte) (int, error) {
 	if c.status == 0 {
-		c.status = http.StatusOK
+		c.WriteHeader(http.StatusOK)
+	}
+	if c.stream != nil && c.status < 400 {
+		return c.stream.Write(p)
 	}
 	return c.buf.Write(p)
 }
 
-// Flush exists so the Messages streaming backends, which type-assert for a
-// Flusher, still take the streaming path.
 func (c *anthropicCaptureWriter) Flush() {}
 
 // addCacheBreakpoints marks the system prompt, the last tool and the last

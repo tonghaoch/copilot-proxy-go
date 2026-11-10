@@ -2,12 +2,13 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
 // anthropicToResponsesResult converts a complete Anthropic message into the
 // Responses API result shape that Codex reads.
-func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]bool) *ResponsesResult {
+func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]bool) (*ResponsesResult, error) {
 	result := &ResponsesResult{
 		ID:     "resp_" + resp.ID,
 		Object: "response",
@@ -40,24 +41,33 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 				EncryptedContent: block.Signature,
 			})
 		case "tool_use":
-			result.Output = append(result.Output, toolCallItem(block, customTools))
+			item, err := toolCallItem(block, customTools)
+			if err != nil {
+				return nil, err
+			}
+			result.Output = append(result.Output, item)
 		}
 	}
 	result.OutputText = text.String()
-	return result
+	return result, nil
 }
 
 // toolCallItem builds a function_call item, or a custom_tool_call item when the
 // tool was declared as freeform. Freeform tools carry their raw input as {"input": "..."}.
-func toolCallItem(block ContentBlock, customTools map[string]bool) ResponsesOutput {
+func toolCallItem(block ContentBlock, customTools map[string]bool) (ResponsesOutput, error) {
 	if customTools[block.Name] {
 		var args struct {
-			Input string `json:"input"`
+			Input *string `json:"input"`
 		}
-		_ = json.Unmarshal(block.Input, &args)
-		return ResponsesOutput{Type: "custom_tool_call", Status: "completed", CallID: block.ID, Name: block.Name, Arguments: args.Input}
+		if err := json.Unmarshal(block.Input, &args); err != nil {
+			return ResponsesOutput{}, fmt.Errorf("invalid custom tool input for %q: %w", block.Name, err)
+		}
+		if args.Input == nil {
+			return ResponsesOutput{}, fmt.Errorf("custom tool %q did not supply an input string", block.Name)
+		}
+		return ResponsesOutput{Type: "custom_tool_call", Status: "completed", CallID: block.ID, Name: block.Name, Input: args.Input}, nil
 	}
-	return ResponsesOutput{Type: "function_call", Status: "completed", CallID: block.ID, Name: block.Name, Arguments: string(block.Input)}
+	return ResponsesOutput{Type: "function_call", Status: "completed", CallID: block.ID, Name: block.Name, Arguments: string(block.Input)}, nil
 }
 
 // responsesStreamWriter turns an Anthropic SSE stream into Responses SSE events.
@@ -75,12 +85,16 @@ type responsesStreamWriter struct {
 	itemID     string
 	text       strings.Builder
 	args       strings.Builder
+	customText strings.Builder
+	inputPos   int
+	inputEnd   bool
 	thinking   strings.Builder
 	signature  string
 	output     []ResponsesOutput
 	usage      AnthropicUsage
 	stopReason string
 	started    bool
+	finished   bool
 }
 
 func newResponsesStreamWriter(emit func(string, any) error, model string, customTools map[string]bool) *responsesStreamWriter {
@@ -118,6 +132,9 @@ func anthropicUsageToResponses(u AnthropicUsage) *ResponsesUsage {
 
 // Handle processes one Anthropic SSE event (event type plus JSON data).
 func (s *responsesStreamWriter) Handle(eventType, data string) error {
+	if s.finished {
+		return nil
+	}
 	switch eventType {
 	case "message_start":
 		var ev struct {
@@ -157,16 +174,29 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 		s.mergeUsage(ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens, ev.Usage.CacheCreationInputTokens)
 	case "message_stop":
 		status := "completed"
+		event := "response.completed"
 		if s.stopReason == "max_tokens" {
 			status = "incomplete"
+			event = "response.incomplete"
 		}
 		resp := s.responseObject(status)
+		if status == "incomplete" {
+			resp["incomplete_details"] = IncompleteDetail{Reason: "max_output_tokens"}
+		}
 		resp["usage"] = *anthropicUsageToResponses(s.usage)
-		return s.send("response.completed", map[string]any{"response": resp})
+		if err := s.send(event, map[string]any{"response": resp}); err != nil {
+			return err
+		}
+		s.finished = true
+		return nil
 	case "error":
 		var ev StreamErrorEvent
 		_ = json.Unmarshal([]byte(data), &ev)
-		return s.send("error", map[string]any{"code": ev.Error.Type, "message": ev.Error.Message})
+		if err := s.send("error", map[string]any{"code": ev.Error.Type, "message": ev.Error.Message}); err != nil {
+			return err
+		}
+		s.finished = true
+		return nil
 	}
 	return nil
 }
@@ -189,6 +219,9 @@ func (s *responsesStreamWriter) openBlock(block ContentBlock) error {
 	s.outputIdx = len(s.output)
 	s.text.Reset()
 	s.args.Reset()
+	s.customText.Reset()
+	s.inputPos = -1
+	s.inputEnd = false
 	s.thinking.Reset()
 	s.signature = ""
 	switch block.Type {
@@ -206,13 +239,14 @@ func (s *responsesStreamWriter) openBlock(block ContentBlock) error {
 		})
 	case "tool_use":
 		s.itemID = block.ID
-		typ := "function_call"
+		item := map[string]any{"type": "function_call", "id": block.ID, "call_id": block.ID, "name": block.Name, "status": "in_progress"}
 		if s.customTools[block.Name] {
-			typ = "custom_tool_call"
+			item["type"] = "custom_tool_call"
+			item["input"] = ""
 		}
 		return s.send("response.output_item.added", map[string]any{
 			"output_index": s.outputIdx,
-			"item":         map[string]any{"type": typ, "id": block.ID, "call_id": block.ID, "name": block.Name, "status": "in_progress"},
+			"item":         item,
 		})
 	}
 	return nil
@@ -233,6 +267,9 @@ func (s *responsesStreamWriter) delta(d Delta) error {
 		s.signature = d.Signature
 	case "input_json_delta":
 		s.args.WriteString(d.PartialJSON)
+		if s.customTools[s.block.Name] {
+			return s.streamCustomInput()
+		}
 		return s.send("response.function_call_arguments.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "delta": d.PartialJSON})
 	}
 	return nil
@@ -254,19 +291,30 @@ func (s *responsesStreamWriter) closeBlock() error {
 		item = ResponsesOutput{Type: "reasoning", ID: s.itemID, Status: "completed", EncryptedContent: s.signature,
 			Summary: []SummaryItem{{Type: "summary_text", Text: s.thinking.String()}}}
 	case "tool_use":
-		block.Input = json.RawMessage(s.args.String())
-		if s.args.Len() == 0 {
+		if s.args.Len() > 0 {
+			block.Input = json.RawMessage(s.args.String())
+		} else if len(block.Input) == 0 {
 			block.Input = json.RawMessage("{}")
 		}
-		item = toolCallItem(block, s.customTools)
+		var err error
+		item, err = toolCallItem(block, s.customTools)
+		if err != nil {
+			return err
+		}
 		item.ID = block.ID
 		if item.Type == "custom_tool_call" {
-			item.Arguments = ""
-			var args struct {
-				Input string `json:"input"`
+			if s.inputPos < 0 && *item.Input != "" {
+				s.customText.WriteString(*item.Input)
+				if err := s.send("response.custom_tool_call_input.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "delta": *item.Input}); err != nil {
+					return err
+				}
 			}
-			_ = json.Unmarshal(block.Input, &args)
-			item.Arguments = args.Input
+			if s.customText.String() != *item.Input {
+				return fmt.Errorf("custom tool %q changed its input while streaming", block.Name)
+			}
+			if err := s.send("response.custom_tool_call_input.done", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "input": *item.Input}); err != nil {
+				return err
+			}
 		}
 	default:
 		return nil

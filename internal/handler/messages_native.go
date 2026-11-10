@@ -14,6 +14,8 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
+var errNativeMessageStop = errors.New("native stream terminal event")
+
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
 // rawBody is the original request bytes to preserve unknown fields.
@@ -110,8 +112,11 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 				return err
 			}
 			flusher.Flush()
+			if eventType == "message_stop" || eventType == "error" {
+				return errNativeMessageStop
+			}
 			return nil
-		}); err != nil {
+		}); err != nil && !errors.Is(err, errNativeMessageStop) {
 			rec.Error = err.Error()
 			slog.Error("native messages streaming error", "error", err)
 		}

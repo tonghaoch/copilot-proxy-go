@@ -71,6 +71,7 @@ type ResponsesOutput struct {
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
+	Input            *string         `json:"input,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
 	Summary          []SummaryItem   `json:"summary,omitempty"`
 }

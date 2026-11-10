@@ -81,7 +81,7 @@ func TestResponsesToAnthropicFreeformToolRoundTrip(t *testing.T) {
 		t.Fatalf("freeform input not wrapped: %s", req.Messages[0].Content)
 	}
 
-	result := anthropicToResponsesResult(&AnthropicResponse{
+	result, err := anthropicToResponsesResult(&AnthropicResponse{
 		ID:         "msg_x",
 		Model:      "claude-sonnet-5.5",
 		StopReason: "tool_use",
@@ -89,8 +89,19 @@ func TestResponsesToAnthropicFreeformToolRoundTrip(t *testing.T) {
 			{Type: "tool_use", ID: "p2", Name: "apply_patch", Input: json.RawMessage(`{"input":"*** end"}`)},
 		},
 	}, custom)
-	if result.Output[0].Type != "custom_tool_call" || result.Output[0].Arguments != "*** end" {
-		t.Fatalf("freeform output = %+v", result.Output[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(result.Output[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item map[string]any
+	if err := json.Unmarshal(wire, &item); err != nil {
+		t.Fatal(err)
+	}
+	if item["type"] != "custom_tool_call" || item["input"] != "*** end" || item["arguments"] != nil {
+		t.Fatalf("freeform output = %s", wire)
 	}
 }
 
@@ -105,7 +116,10 @@ func TestAnthropicToResponsesResultMapsBlocks(t *testing.T) {
 			{Type: "text", Text: "hello"},
 		},
 	}
-	result := anthropicToResponsesResult(resp, nil)
+	result, err := anthropicToResponsesResult(resp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Status != "completed" || result.OutputText != "hello" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -151,6 +165,153 @@ func TestResponsesStreamWriterEmitsCompletedWithToolCall(t *testing.T) {
 	}
 	if len(stream.output) != 1 || stream.output[0].Type != "function_call" || stream.output[0].Arguments != `{"cmd":"ls"}` {
 		t.Fatalf("output = %+v", stream.output)
+	}
+}
+
+func TestResponsesStreamWriterStreamsCustomToolInput(t *testing.T) {
+	var deltas strings.Builder
+	var added, done, inputDone map[string]any
+	emit := func(eventType string, data any) error {
+		wire, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		var event map[string]any
+		if err := json.Unmarshal(wire, &event); err != nil {
+			return err
+		}
+		switch eventType {
+		case "response.output_item.added":
+			added = event["item"].(map[string]any)
+		case "response.custom_tool_call_input.delta":
+			deltas.WriteString(event["delta"].(string))
+		case "response.custom_tool_call_input.done":
+			inputDone = event
+		case "response.function_call_arguments.delta":
+			t.Error("custom tool emitted a function-call delta")
+		case "response.output_item.done":
+			done = event["item"].(map[string]any)
+		}
+		return nil
+	}
+	stream := newResponsesStreamWriter(emit, "claude-test", map[string]bool{"apply_patch": true})
+	if err := stream.Handle("message_start", `{"message":{"id":"m","usage":{"input_tokens":1}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Handle("content_block_start", `{"content_block":{"type":"tool_use","id":"p","name":"apply_patch"}}`); err != nil {
+		t.Fatal(err)
+	}
+	parts := []string{`{"other":[1,2],"input":"first `, `lin`, `e\n`, `\uD83`, `D`, `\uDE`, `03`, ` and \"`, `quoted\"`, `"}`}
+	for i, part := range parts {
+		wire, err := json.Marshal(ContentBlockDeltaEvent{Delta: Delta{Type: "input_json_delta", PartialJSON: part}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Handle("content_block_delta", string(wire)); err != nil {
+			t.Fatal(err)
+		}
+		if i == 2 && deltas.String() != "first line\n" {
+			t.Fatalf("input was not streamed before the tool finished: %q", deltas.String())
+		}
+		if i == 4 && deltas.String() != "first line\n" {
+			t.Fatalf("partial surrogate was emitted prematurely: %q", deltas.String())
+		}
+		if i == 6 && deltas.String() != "first line\n😃" {
+			t.Fatalf("split surrogate pair was not decoded: %q", deltas.String())
+		}
+	}
+	if err := stream.Handle("content_block_stop", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	want := "first line\n😃 and \"quoted\""
+	if got := deltas.String(); got != want {
+		t.Fatalf("custom input deltas = %q, want %q", got, want)
+	}
+	if added["input"] != "" || inputDone["input"] != want || done["input"] != want || done["arguments"] != nil {
+		t.Fatalf("custom tool events: added=%v input done=%v item done=%v", added, inputDone, done)
+	}
+}
+
+func TestCustomToolInputHandlesJSONFragmentBoundaries(t *testing.T) {
+	inputs := []string{
+		`{"input":""}`,
+		`{"input":"tab\tnewline\nquote\"slash\\solidus\/"}`,
+		`{"other":{"input":"ignored"},"input":"\u0061\uD83D\uDE03"}`,
+		`{"\u0069nput":"\uD800x\uD800\uD83D\uDE03"}`,
+	}
+	for _, raw := range inputs {
+		var expected struct {
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal([]byte(raw), &expected); err != nil {
+			t.Fatal(err)
+		}
+		for split := 0; split <= len(raw); split++ {
+			var received strings.Builder
+			var doneInput string
+			stream := newResponsesStreamWriter(func(eventType string, data any) error {
+				fields := data.(map[string]any)
+				switch eventType {
+				case "response.custom_tool_call_input.delta":
+					received.WriteString(fields["delta"].(string))
+				case "response.custom_tool_call_input.done":
+					doneInput = fields["input"].(string)
+				}
+				return nil
+			}, "claude-test", map[string]bool{"patch": true})
+			if err := stream.openBlock(ContentBlock{Type: "tool_use", ID: "p", Name: "patch"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, fragment := range []string{raw[:split], raw[split:]} {
+				if err := stream.delta(Delta{Type: "input_json_delta", PartialJSON: fragment}); err != nil {
+					t.Fatalf("%s split at %d: %v", raw, split, err)
+				}
+			}
+			if err := stream.closeBlock(); err != nil {
+				t.Fatalf("%s split at %d: %v", raw, split, err)
+			}
+			if received.String() != expected.Input || doneInput != expected.Input {
+				t.Fatalf("%s split at %d: deltas=%q done=%q, want %q", raw, split, received.String(), doneInput, expected.Input)
+			}
+		}
+	}
+}
+
+func TestCustomToolRejectsMissingOrInvalidInput(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"input":null}`, `{"input":42}`, `{"input":"unfinished`} {
+		_, err := anthropicToResponsesResult(&AnthropicResponse{Content: []ContentBlock{{
+			Type: "tool_use", Name: "patch", Input: json.RawMessage(raw),
+		}}}, map[string]bool{"patch": true})
+		if err == nil {
+			t.Fatalf("invalid custom tool input accepted: %s", raw)
+		}
+	}
+}
+
+func TestResponsesStreamWriterReportsIncompleteResponse(t *testing.T) {
+	var eventType string
+	var event map[string]any
+	stream := newResponsesStreamWriter(func(typ string, data any) error {
+		eventType = typ
+		wire, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(wire, &event)
+	}, "claude-test", nil)
+	if err := stream.Handle("message_start", `{"message":{"id":"m","usage":{"input_tokens":1}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Handle("message_delta", `{"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":2}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Handle("message_stop", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	response := event["response"].(map[string]any)
+	details, _ := response["incomplete_details"].(map[string]any)
+	if eventType != "response.incomplete" || response["status"] != "incomplete" || details["reason"] != "max_output_tokens" {
+		t.Fatalf("terminal event = %s, response = %v", eventType, response)
 	}
 }
 
@@ -221,10 +382,13 @@ func TestResponsesToAnthropicEndsWithUserTurn(t *testing.T) {
 
 // Codex parses response.completed strictly and fails without usage.total_tokens.
 func TestResponsesUsageIncludesTotalTokens(t *testing.T) {
-	result := anthropicToResponsesResult(&AnthropicResponse{
+	result, err := anthropicToResponsesResult(&AnthropicResponse{
 		ID: "m", Model: "claude-haiku-5.5",
 		Usage: AnthropicUsage{InputTokens: 10, OutputTokens: 4},
 	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Usage.TotalTokens != 14 {
 		t.Fatalf("result total_tokens = %d, want 14", result.Usage.TotalTokens)
 	}
