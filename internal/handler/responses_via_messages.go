@@ -19,6 +19,7 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 		api.ForwardError(w, err)
 		return
 	}
+	filterUnsupportedTools(req)
 	body, err := json.Marshal(req)
 	if err != nil {
 		api.ForwardError(w, err)

@@ -922,8 +922,9 @@ function renderStatsBar() {
   const inputTok = formatTokens(statsData.tokens ? statsData.tokens.input : 0);
   const outputTok = formatTokens(statsData.tokens ? statsData.tokens.output : 0);
   const cached = statsData.tokens ? statsData.tokens.cached : 0;
+  const cacheCreated = statsData.tokens ? (statsData.tokens.cache_creation || 0) : 0;
   const totalInput = statsData.tokens ? statsData.tokens.input : 0;
-  const total = cached + totalInput;
+  const total = cached + cacheCreated + totalInput;
   const cacheRate = total > 0 ? Math.round((cached / total) * 100) : 0;
 
   let html = '<div class="stats-bar">';

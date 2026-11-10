@@ -26,20 +26,39 @@ func getToolResultText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func stripCacheControlScope(v any) {
-	switch val := v.(type) {
-	case map[string]any:
-		if cc, ok := val["cache_control"].(map[string]any); ok {
-			delete(cc, "scope")
-		}
-		for _, child := range val {
-			stripCacheControlScope(child)
-		}
-	case []any:
-		for _, item := range val {
-			stripCacheControlScope(item)
+func visitCacheControls(payload map[string]any, visit func(map[string]any)) {
+	visitBlock := func(v any) {
+		if block, ok := v.(map[string]any); ok {
+			if cc, ok := block["cache_control"].(map[string]any); ok {
+				visit(cc)
+			}
 		}
 	}
+	visitBlock(payload)
+	for _, field := range []string{"tools", "system"} {
+		if blocks, ok := payload[field].([]any); ok {
+			for _, block := range blocks {
+				visitBlock(block)
+			}
+		}
+	}
+	if messages, ok := payload["messages"].([]any); ok {
+		for _, raw := range messages {
+			if message, ok := raw.(map[string]any); ok {
+				if blocks, ok := message["content"].([]any); ok {
+					for _, block := range blocks {
+						visitBlock(block)
+					}
+				}
+			}
+		}
+	}
+}
+
+func stripCacheControlScope(payload map[string]any) {
+	visitCacheControls(payload, func(cc map[string]any) {
+		delete(cc, "scope")
+	})
 }
 
 // applyCacheTTL sets ttl on every cache_control breakpoint, unless the client
@@ -53,26 +72,12 @@ func applyCacheTTL(payload map[string]any, ttl string) {
 	}
 	var breakpoints []map[string]any
 	explicit := false
-	var walk func(v any)
-	walk = func(v any) {
-		switch val := v.(type) {
-		case map[string]any:
-			if cc, ok := val["cache_control"].(map[string]any); ok {
-				if _, has := cc["ttl"]; has {
-					explicit = true
-				}
-				breakpoints = append(breakpoints, cc)
-			}
-			for _, child := range val {
-				walk(child)
-			}
-		case []any:
-			for _, item := range val {
-				walk(item)
-			}
+	visitCacheControls(payload, func(cc map[string]any) {
+		if _, has := cc["ttl"]; has {
+			explicit = true
 		}
-	}
-	walk(payload)
+		breakpoints = append(breakpoints, cc)
+	})
 	if explicit {
 		return
 	}

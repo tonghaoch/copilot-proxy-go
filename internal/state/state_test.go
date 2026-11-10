@@ -7,14 +7,18 @@ import (
 
 func TestModelsAreReturnedAsCopies(t *testing.T) {
 	s := &State{}
-	s.SetModels([]Model{{ID: "model-a", SupportedEndpoints: []string{"/responses"}}})
+	s.SetModels([]Model{{
+		ID: "model-a", SupportedEndpoints: []string{"/responses"},
+		Billing: ModelBilling{TokenPrices: map[string]PriceTier{"default": {InputPrice: 10}}},
+	}})
 
 	models := s.GetModels()
 	models[0].ID = "changed"
 	models[0].SupportedEndpoints[0] = "/changed"
+	models[0].Billing.TokenPrices["default"] = PriceTier{InputPrice: 999}
 
 	model := s.FindModel("model-a")
-	if model == nil || model.SupportedEndpoints[0] != "/responses" {
+	if model == nil || model.SupportedEndpoints[0] != "/responses" || model.Billing.TokenPrices["default"].InputPrice != 10 {
 		t.Fatalf("stored model was mutated through GetModels: %+v", model)
 	}
 

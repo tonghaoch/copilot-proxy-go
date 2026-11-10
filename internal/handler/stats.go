@@ -22,9 +22,10 @@ type statsResponse struct {
 }
 
 type statsTokens struct {
-	Input  int64 `json:"input"`
-	Output int64 `json:"output"`
-	Cached int64 `json:"cached"`
+	Input         int64 `json:"input"`
+	Output        int64 `json:"output"`
+	Cached        int64 `json:"cached"`
+	CacheCreation int64 `json:"cache_creation"`
 }
 
 type statsSession struct {
@@ -93,9 +94,10 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds: int64(time.Since(snap.Aggregates.StartTime).Seconds()),
 		TotalRequests: snap.Aggregates.TotalRequests,
 		Tokens: statsTokens{
-			Input:  snap.Aggregates.TotalInputTokens,
-			Output: snap.Aggregates.TotalOutputTokens,
-			Cached: snap.Aggregates.TotalCachedTokens,
+			Input:         snap.Aggregates.TotalInputTokens,
+			Output:        snap.Aggregates.TotalOutputTokens,
+			Cached:        snap.Aggregates.TotalCachedTokens,
+			CacheCreation: snap.Aggregates.TotalCacheCreationTokens,
 		},
 		ModelCounts:   snap.Aggregates.ModelCounts,
 		BackendCounts: snap.Aggregates.BackendCounts,

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -32,6 +33,14 @@ func (c *Config) EffectiveCacheTTL() string {
 		return DefaultCacheTTL
 	}
 	return *c.CacheTTL
+}
+
+func (c *Config) ValidateCacheTTL() error {
+	ttl := c.EffectiveCacheTTL()
+	if ttl != "" && ttl != "5m" && ttl != "1h" {
+		return fmt.Errorf("invalid cacheTTL %q: expected 5m, 1h, or an empty string", ttl)
+	}
+	return nil
 }
 
 type AuthConfig struct {
@@ -164,6 +173,10 @@ func cloneConfig(cfg *Config) *Config {
 	cloned.Auth.APIKeys = append([]string(nil), cfg.Auth.APIKeys...)
 	cloned.ExtraPrompts = cloneStringMap(cfg.ExtraPrompts)
 	cloned.ModelReasoningEfforts = cloneStringMap(cfg.ModelReasoningEfforts)
+	if cfg.CacheTTL != nil {
+		ttl := *cfg.CacheTTL
+		cloned.CacheTTL = &ttl
+	}
 	return &cloned
 }
 

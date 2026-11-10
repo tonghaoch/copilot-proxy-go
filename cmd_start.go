@@ -59,6 +59,9 @@ func startCmd() *cobra.Command {
 			if err := config.Load(); err != nil {
 				slog.Warn("failed to load config, using defaults: " + err.Error())
 			}
+			if err := config.Get().ValidateCacheTTL(); err != nil {
+				return err
+			}
 			config.MergeDefaults()
 
 			if proxyEnv {

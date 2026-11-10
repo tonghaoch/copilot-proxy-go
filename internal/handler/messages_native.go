@@ -30,15 +30,15 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		payload["model"] = req.Model
 	}
 
-	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
-	stripCacheControlScope(payload)
-	applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
-
 	// Strip tools Copilot rejects (e.g. image_generation)
 	stripUnsupportedToolsInMap(payload)
 
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload)
+
+	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
 
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
@@ -130,6 +130,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 			rec.InputTokens = int64(anthResp.Usage.InputTokens)
 			rec.OutputTokens = int64(anthResp.Usage.OutputTokens)
 			rec.CachedTokens = int64(anthResp.Usage.CacheReadInputTokens)
+			rec.CacheCreationTokens = int64(anthResp.Usage.CacheCreationInputTokens)
 		}
 	}
 }
@@ -143,11 +144,21 @@ func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
 		if json.Unmarshal([]byte(data), &evt) == nil {
 			rec.InputTokens = int64(evt.Message.Usage.InputTokens)
 			rec.CachedTokens = int64(evt.Message.Usage.CacheReadInputTokens)
+			rec.CacheCreationTokens = int64(evt.Message.Usage.CacheCreationInputTokens)
 		}
 	case "message_delta":
 		var evt MessageDeltaEvent
 		if json.Unmarshal([]byte(data), &evt) == nil {
 			rec.OutputTokens = int64(evt.Usage.OutputTokens)
+			if evt.Usage.InputTokens != nil {
+				rec.InputTokens = int64(*evt.Usage.InputTokens)
+			}
+			if evt.Usage.CacheReadInputTokens != nil {
+				rec.CachedTokens = int64(*evt.Usage.CacheReadInputTokens)
+			}
+			if evt.Usage.CacheCreationInputTokens != nil {
+				rec.CacheCreationTokens = int64(*evt.Usage.CacheCreationInputTokens)
+			}
 		}
 	}
 }

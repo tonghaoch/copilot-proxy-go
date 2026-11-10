@@ -220,4 +220,28 @@ func TestApplyCacheTTL(t *testing.T) {
 	if strings.Contains(string(out), "ttl") {
 		t.Fatalf("empty ttl must disable, got %s", out)
 	}
+
+	topLevel := parse(`{"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"x"}]}`)
+	applyCacheTTL(topLevel, "1h")
+	if ttl := topLevel["cache_control"].(map[string]any)["ttl"]; ttl != "1h" {
+		t.Fatalf("top-level cache ttl = %v", ttl)
+	}
+}
+
+func TestCacheControlsIgnoreToolData(t *testing.T) {
+	var payload map[string]any
+	err := json.Unmarshal([]byte(`{
+		"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],
+		"tools":[{"name":"example","input_schema":{"properties":{"cache_control":{"type":"object","ttl":"5m","scope":"keep"}}}}]
+	}`), &payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, "1h")
+	control := payload["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	schema := payload["tools"].([]any)[0].(map[string]any)["input_schema"].(map[string]any)["properties"].(map[string]any)["cache_control"].(map[string]any)
+	if control["ttl"] != "1h" || schema["ttl"] != "5m" || schema["scope"] != "keep" {
+		t.Fatalf("control = %v, tool schema = %v", control, schema)
+	}
 }

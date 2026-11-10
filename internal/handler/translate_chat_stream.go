@@ -259,11 +259,7 @@ func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
 			}},
 		})
 	}
-	usage := DeltaUsage{OutputTokens: s.outputTokens}
-	if s.hasUsage {
-		input, cached := s.inputTokens, s.cachedTokens
-		usage.InputTokens, usage.CacheReadInputTokens = &input, &cached
-	}
+	usage := s.deltaUsage()
 	return append(events,
 		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
 			Type:  "message_delta",
@@ -272,6 +268,15 @@ func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
 		}},
 		SSEEvent{Event: "message_stop", Data: MessageStopEvent{Type: "message_stop"}},
 	)
+}
+
+func (s *AnthropicStreamState) deltaUsage() DeltaUsage {
+	usage := DeltaUsage{OutputTokens: s.outputTokens}
+	if s.hasUsage {
+		input, cached := s.inputTokens, s.cachedTokens
+		usage.InputTokens, usage.CacheReadInputTokens = &input, &cached
+	}
+	return usage
 }
 
 // captureUsage updates the counters from any chunk carrying usage. OpenAI
