@@ -27,10 +27,18 @@ func getToolResultText(raw json.RawMessage) string {
 }
 
 func visitCacheControls(payload map[string]any, visit func(map[string]any)) {
-	visitBlock := func(v any) {
+	var visitBlock func(any)
+	visitBlock = func(v any) {
 		if block, ok := v.(map[string]any); ok {
 			if cc, ok := block["cache_control"].(map[string]any); ok {
 				visit(cc)
+			}
+			if block["type"] == "tool_result" {
+				if content, ok := block["content"].([]any); ok {
+					for _, nested := range content {
+						visitBlock(nested)
+					}
+				}
 			}
 		}
 	}

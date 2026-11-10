@@ -237,11 +237,32 @@ func TestCacheControlsIgnoreToolData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	stripCacheControlScope(payload)
 	applyCacheTTL(payload, "1h")
 	control := payload["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
 	schema := payload["tools"].([]any)[0].(map[string]any)["input_schema"].(map[string]any)["properties"].(map[string]any)["cache_control"].(map[string]any)
 	if control["ttl"] != "1h" || schema["ttl"] != "5m" || schema["scope"] != "keep" {
 		t.Fatalf("control = %v, tool schema = %v", control, schema)
+	}
+}
+
+func TestCacheControlsVisitNestedToolResultContent(t *testing.T) {
+	var payload map[string]any
+	err := json.Unmarshal([]byte(`{
+		"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],
+		"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a",
+			"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"5m","scope":"local"}}]}]}]
+	}`), &payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, "1h")
+	control := payload["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	tool := payload["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	nested := tool["content"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if _, ok := nested["scope"]; ok || nested["ttl"] != "5m" || control["ttl"] != nil {
+		t.Fatalf("top-level control=%v, nested control=%v", control, nested)
 	}
 }
