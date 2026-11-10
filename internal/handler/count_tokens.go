@@ -28,7 +28,7 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	var req AnthropicRequest
 	var raw map[string]any
-	if err != nil || json.Unmarshal(body, &req) != nil || json.Unmarshal(body, &raw) != nil {
+	if err != nil || json.Unmarshal(body, &req) != nil || json.Unmarshal(body, &raw) != nil || raw == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(CountTokensResponse{InputTokens: 1})
 		return

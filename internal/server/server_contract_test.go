@@ -215,6 +215,17 @@ func TestResponsesContractRejectsMalformedJSONBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestCountTokensNullUsesMalformedInputFallback(t *testing.T) {
+	srv := server.NewWithHandler(server.Options{}, handler.New(handler.Dependencies{Copilot: &contractCopilot{}}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewBufferString("null"))
+	setTestAuthorization(req)
+	recorder := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"input_tokens":1`)) {
+		t.Fatalf("unexpected null response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func setTestAuthorization(req *http.Request) {
 	if keys := config.GetAPIKeys(); len(keys) > 0 {
 		req.Header.Set("Authorization", "Bearer "+keys[0])
