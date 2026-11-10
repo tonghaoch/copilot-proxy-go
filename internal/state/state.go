@@ -251,6 +251,7 @@ func cloneModels(models []Model) []Model {
 
 func cloneModel(model Model) Model {
 	model.SupportedEndpoints = append([]string(nil), model.SupportedEndpoints...)
+	model.Capabilities.Limits.Vision.SupportedMediaTypes = append([]string(nil), model.Capabilities.Limits.Vision.SupportedMediaTypes...)
 	if model.Billing.TokenPrices != nil {
 		prices := make(map[string]PriceTier, len(model.Billing.TokenPrices))
 		for name, tier := range model.Billing.TokenPrices {
