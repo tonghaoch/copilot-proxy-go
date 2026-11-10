@@ -20,6 +20,7 @@ type TokenBudget struct {
 	mu                    sync.Mutex
 	limit                 int64
 	spent                 int64
+	reserved              int64
 	inFlight              int
 	blocked               string
 	conservativeEstimates int64
@@ -34,6 +35,8 @@ type BudgetAdmission struct {
 type BudgetSnapshot struct {
 	LimitUSD              float64 `json:"limit_usd"`
 	EstimatedSpentUSD     float64 `json:"estimated_spent_usd"`
+	ReportedUsageUSD      float64 `json:"reported_usage_usd"`
+	ReservedUSD           float64 `json:"reserved_usd"`
 	RemainingUSD          float64 `json:"remaining_usd"`
 	InFlight              int     `json:"in_flight"`
 	Blocked               bool    `json:"blocked"`
@@ -47,6 +50,11 @@ func NewTokenBudget(limitUSD float64) (*TokenBudget, error) {
 
 // NewTokenBudgetWithSpent restores an estimate carried over from an earlier process.
 func NewTokenBudgetWithSpent(limitUSD, spentUSD float64) (*TokenBudget, error) {
+	return NewTokenBudgetWithRestored(limitUSD, spentUSD, 0)
+}
+
+// NewTokenBudgetWithRestored splits a restored total into reported usage and reserve.
+func NewTokenBudgetWithRestored(limitUSD, spentUSD, reservedUSD float64) (*TokenBudget, error) {
 	nanos := math.Floor(limitUSD * nanoUSD)
 	if math.IsNaN(nanos) || math.IsInf(nanos, 0) || nanos < 1 || nanos >= float64(math.MaxInt64) {
 		return nil, errors.New("budget must be a positive, finite USD amount of at least $0.000000001")
@@ -55,7 +63,11 @@ func NewTokenBudgetWithSpent(limitUSD, spentUSD float64) (*TokenBudget, error) {
 	if math.IsNaN(spent) || math.IsInf(spent, 0) || spentUSD < 0 || spent >= float64(math.MaxInt64) {
 		return nil, errors.New("prior estimated spend must be a non-negative, finite USD amount")
 	}
-	return &TokenBudget{limit: int64(nanos), spent: int64(spent)}, nil
+	reserved := math.Ceil(reservedUSD * nanoUSD)
+	if math.IsNaN(reserved) || math.IsInf(reserved, 0) || reservedUSD < 0 || reservedUSD > spentUSD || reserved >= float64(math.MaxInt64) {
+		return nil, errors.New("prior reserved amount must be non-negative, finite, and no greater than prior estimated spend")
+	}
+	return &TokenBudget{limit: int64(nanos), spent: int64(spent), reserved: int64(reserved)}, nil
 }
 
 // Admit snapshots prices when a request enters; already admitted work may finish.
@@ -138,7 +150,7 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 	}
 	admission.finished = true
 	b.inFlight--
-	if !rec.UpstreamAttempted || rec.UpstreamRejected {
+	if !rec.UpstreamAttempted || (rec.UpstreamRejected && rec.UncertainRetries == 0) {
 		return
 	}
 	if rec.Backend != admission.backend {
@@ -146,26 +158,47 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 		return
 	}
 	complete := rec.InputUsageKnown && (admission.backend == "embeddings" || rec.OutputUsageKnown)
-	var cost int64
+	var cost, reserve int64
 	var err error
-	if complete {
-		cost, err = estimateTokenCost(admission.model.Billing, rec)
-	} else {
-		cost, err = estimateIncompleteTokenCost(admission.model, rec)
+	if !rec.UpstreamRejected {
+		if complete {
+			cost, err = estimateTokenCost(admission.model.Billing, rec)
+		} else {
+			cost, err = estimateIncompleteTokenCost(admission.model, rec)
+			reserve = cost
+		}
+		if err != nil {
+			b.pause(admission.model.ID, err.Error())
+			return
+		}
 	}
-	if err != nil {
-		b.pause(admission.model.ID, err.Error())
-		return
+	if rec.UncertainRetries > 0 {
+		bound, err := estimateIncompleteTokenCost(admission.model, RequestRecord{Backend: admission.backend})
+		if err != nil {
+			b.pause(admission.model.ID, err.Error())
+			return
+		}
+		if bound > 0 && rec.UncertainRetries > (math.MaxInt64-cost)/bound {
+			b.pause(admission.model.ID, "estimated cost overflowed")
+			return
+		}
+		retries := bound * rec.UncertainRetries
+		cost += retries
+		reserve += retries
 	}
 	if cost > math.MaxInt64-b.spent {
 		b.pause(admission.model.ID, "estimated cost overflowed")
 		return
 	}
 	b.spent += cost
-	if !complete {
-		b.conservativeEstimates++
+	b.reserved += reserve
+	if reserve > 0 {
+		b.conservativeEstimates += rec.UncertainRetries
+		if !complete && !rec.UpstreamRejected {
+			b.conservativeEstimates++
+		}
 		slog.Warn("upstream usage incomplete; reserved conservative token cost",
-			"model", admission.model.ID, "reserved_usd", float64(cost)/nanoUSD)
+			"model", admission.model.ID, "reserved_usd", float64(reserve)/nanoUSD)
 	}
 }
 
@@ -186,6 +219,7 @@ func (b *TokenBudget) Snapshot() BudgetSnapshot {
 	}
 	return BudgetSnapshot{
 		LimitUSD: float64(b.limit) / nanoUSD, EstimatedSpentUSD: float64(b.spent) / nanoUSD,
+		ReportedUsageUSD: float64(b.spent-b.reserved) / nanoUSD, ReservedUSD: float64(b.reserved) / nanoUSD,
 		RemainingUSD: float64(remaining) / nanoUSD, InFlight: b.inFlight,
 		Blocked: reason != "", Reason: reason, ConservativeEstimates: b.conservativeEstimates,
 	}

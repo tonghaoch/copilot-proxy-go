@@ -26,6 +26,9 @@ func ChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "chat_completions", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	w = tracked.Writer
 	rec := tracked.Record
 	rec.Backend = "chat_completions"

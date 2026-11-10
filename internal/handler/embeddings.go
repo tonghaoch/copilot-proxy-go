@@ -18,6 +18,9 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "embeddings", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	w = tracked.Writer
 	rec := tracked.Record
 	rec.Backend = "embeddings"

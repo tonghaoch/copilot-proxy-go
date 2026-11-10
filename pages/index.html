@@ -958,6 +958,9 @@ function renderBudgetCard() {
   html += '<div class="plan-row"><strong>' + money(budget.estimated_spent_usd) + ' / ' + money(budget.limit_usd) + '</strong>';
   html += '<span>' + money(budget.remaining_usd) + ' remaining</span>';
   html += '<span class="badge ' + (budget.blocked ? 'badge-error' : 'badge-feature') + '">' + (budget.blocked ? 'Blocked' : 'Accepting') + '</span></div>';
+  if (budget.reported_usage_usd != null && budget.reserved_usd != null) {
+    html += '<div style="font-size:0.8rem;color:var(--fg-dim);margin-top:0.5rem">Reported usage estimate: ' + money(budget.reported_usage_usd) + '; uncertain usage reserve: ' + money(budget.reserved_usd) + '.</div>';
+  }
   html += '<div style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.5rem">Estimate, not a GitHub invoice. ';
   html += formatNumber(budget.in_flight || 0) + ' in flight; ' + formatNumber(budget.conservative_estimates || 0) + ' conservative estimates.</div>';
   if (budget.reason) html += '<div style="font-size:0.8rem;color:var(--red)">' + escapeHtml(budget.reason) + '</div>';

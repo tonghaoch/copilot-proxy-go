@@ -5,10 +5,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 )
 
 // countingTransport fails the first failures attempts with err, then succeeds.
@@ -52,6 +56,35 @@ func TestTransportErrorIsRetried(t *testing.T) {
 	defer resp.Body.Close()
 	if got := transport.attempts.Load(); got != 3 {
 		t.Errorf("attempts = %d, want 3", got)
+	}
+}
+
+func TestRetryTrackerCountsOnlyAttemptsActuallyRetried(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		waitErr  error
+		want     int64
+		attempts int32
+	}{
+		{"successful retry", nil, 2, 3},
+		{"retry canceled before another attempt", context.Canceled, 0, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &countingTransport{failures: 2, err: errors.New("connection reset")}
+			client := NewClientWithOptions(ClientOptions{
+				HTTPClient: transport, BuildHeaders: func() http.Header { return http.Header{} },
+				BuildURL: func(path string) string { return "https://example.invalid" + path },
+				Retry:    RetryPolicy{Wait: func(context.Context, time.Duration) error { return tt.waitErr }},
+			})
+			ctx, tracker := WithRetryTracker(context.Background())
+			resp, _ := client.ProxyResponses(ctx, []byte(`{}`), false, false)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			if tracker.Uncertain() != tt.want || transport.attempts.Load() != tt.attempts {
+				t.Fatalf("uncertain retries=%d attempts=%d", tracker.Uncertain(), transport.attempts.Load())
+			}
+		})
 	}
 }
 
@@ -156,5 +189,85 @@ func TestRetryAfterIsNotClampedToMaxDelay(t *testing.T) {
 
 	if got := retryDelay(resp, 0, policy); got != 60*time.Second {
 		t.Errorf("retryDelay = %v, want 60s", got)
+	}
+}
+
+func TestIncompleteUploadRetriesOnFreshConnection(t *testing.T) {
+	var mu sync.Mutex
+	var addresses, bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		mu.Lock()
+		addresses = append(addresses, r.RemoteAddr)
+		bodies = append(bodies, string(body))
+		attempt := len(addresses)
+		mu.Unlock()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusRequestTimeout)
+			io.WriteString(w, `{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`)
+			return
+		}
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	client := NewClientWithOptions(ClientOptions{
+		HTTPClient: srv.Client(), BuildHeaders: func() http.Header { return http.Header{} },
+		BuildURL: func(path string) string { return srv.URL + path }, Retry: noWaitPolicy(),
+	})
+	resp, err := client.ProxyMessages(context.Background(), []byte(`{"model":"test"}`), "", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(addresses) != 2 || addresses[0] == addresses[1] {
+		t.Fatalf("expected a fresh connection, got %v", addresses)
+	}
+	if bodies[0] != `{"model":"test"}` || bodies[1] != bodies[0] {
+		t.Fatalf("request body was not replayed: %v", bodies)
+	}
+}
+
+func TestGenericTimeoutIsNotRetried(t *testing.T) {
+	var attempts atomic.Int32
+	client := NewClientWithOptions(ClientOptions{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			return &http.Response{StatusCode: http.StatusRequestTimeout, Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"model timed out"}}`))}, nil
+		})},
+		BuildHeaders: func() http.Header { return http.Header{} },
+		BuildURL:     func(path string) string { return "https://example.invalid" + path },
+		Retry:        noWaitPolicy(),
+	})
+	_, err := client.ProxyMessages(context.Background(), []byte(`{}`), "", false, false)
+	var upstream *api.HTTPError
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusRequestTimeout || attempts.Load() != 1 {
+		t.Fatalf("got error %v and %d attempts", err, attempts.Load())
+	}
+}
+
+func TestRejectedUploadAfterUncertainAttemptRemainsUncertain(t *testing.T) {
+	var attempts atomic.Int32
+	client := NewClientWithOptions(ClientOptions{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			if attempts.Add(1) == 1 {
+				return nil, errors.New("connection reset")
+			}
+			return &http.Response{StatusCode: http.StatusRequestTimeout, Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`))}, nil
+		})},
+		BuildHeaders: func() http.Header { return http.Header{} },
+		BuildURL:     func(path string) string { return "https://example.invalid" + path },
+		Retry:        noWaitPolicy(),
+	})
+	_, err := client.ProxyMessages(context.Background(), []byte(`{}`), "", false, false)
+	var upstream *api.HTTPError
+	if !errors.As(err, &upstream) || !upstream.PriorAttemptUncertain || attempts.Load() != 2 {
+		t.Fatalf("got error %v and %d attempts", err, attempts.Load())
 	}
 }

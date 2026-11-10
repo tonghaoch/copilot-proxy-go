@@ -37,6 +37,7 @@ func TestForwardErrorMapsUpstreamStatusAndHeaders(t *testing.T) {
 		{http.StatusTooManyRequests, "rate_limit_error"},
 		{http.StatusBadGateway, "api_error"},
 	}
+
 	for _, tt := range tests {
 		t.Run(http.StatusText(tt.status), func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -55,5 +56,25 @@ func TestForwardErrorMapsUpstreamStatusAndHeaders(t *testing.T) {
 				t.Fatal("expected Retry-After to be forwarded")
 			}
 		})
+	}
+}
+
+func TestIncompleteRequestBodyTimeout(t *testing.T) {
+	tests := []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{http.StatusRequestTimeout, `{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`, true},
+		{http.StatusRequestTimeout, `{"message":"Timed out reading request body. Try again, or use a smaller request size."}`, true},
+		{http.StatusRequestTimeout, `{"error":{"message":"The model timed out"}}`, false},
+		{http.StatusRequestTimeout, `not json`, false},
+		{http.StatusBadRequest, `{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`, false},
+	}
+	for _, tt := range tests {
+		err := &HTTPError{StatusCode: tt.status, Body: tt.body}
+		if got := err.IncompleteRequestBody(); got != tt.want {
+			t.Errorf("status=%d body=%s: got %v, want %v", tt.status, tt.body, got, tt.want)
+		}
 	}
 }

@@ -12,8 +12,11 @@ func TestStartRejectsInvalidBudgetAndCacheFlags(t *testing.T) {
 		want string
 	}{
 		{[]string{"--budget-spent-usd", "1"}, "requires --budget-usd"},
+		{[]string{"--budget-reserved-usd", "1"}, "requires --budget-usd"},
+		{[]string{"--budget-usd", "10", "--budget-reserved-usd", "1"}, "requires --budget-spent-usd"},
 		{[]string{"--budget-usd", "-1"}, "budget must be"},
 		{[]string{"--budget-usd", "10", "--budget-spent-usd", "-1"}, "prior estimated spend"},
+		{[]string{"--budget-usd", "10", "--budget-spent-usd", "1", "--budget-reserved-usd", "2"}, "prior reserved amount"},
 		{[]string{"--force-cache-ttl", "2h"}, "--force-cache-ttl must be"},
 	}
 	for _, tt := range tests {

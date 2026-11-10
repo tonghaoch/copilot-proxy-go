@@ -19,6 +19,9 @@ func Messages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "messages", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	ww := tracked.Writer
 	rec := tracked.Record
 	var req AnthropicRequest

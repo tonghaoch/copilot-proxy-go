@@ -279,14 +279,21 @@ func TestBudgetPausesWhenStreamingUsageIsMissing(t *testing.T) {
 
 func TestBudgetDistinguishesRejectedAndUncertainUpstreamRequests(t *testing.T) {
 	for _, tt := range []struct {
-		status     int
-		nextStatus int
-		calls      int
+		status         int
+		body           string
+		priorUncertain bool
+		nextStatus     int
+		calls          int
 	}{
-		{http.StatusBadRequest, http.StatusBadRequest, 2},
-		{http.StatusInternalServerError, http.StatusServiceUnavailable, 1},
+		{http.StatusBadRequest, "", false, http.StatusBadRequest, 2},
+		{http.StatusInternalServerError, "", false, http.StatusServiceUnavailable, 1},
+		{http.StatusRequestTimeout, `{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`, false, http.StatusRequestTimeout, 2},
+		{http.StatusRequestTimeout, `{"error":{"message":"model timed out"}}`, false, http.StatusServiceUnavailable, 1},
+		{http.StatusRequestTimeout, `{"error":{"message":"Timed out reading request body. Try again, or use a smaller request size."}}`, true, http.StatusServiceUnavailable, 1},
 	} {
-		upstream := &budgetCopilot{err: &api.HTTPError{Message: "upstream error", StatusCode: tt.status}}
+		upstream := &budgetCopilot{err: &api.HTTPError{
+			Message: "upstream error", StatusCode: tt.status, Body: tt.body, PriorAttemptUncertain: tt.priorUncertain,
+		}}
 		srv, _ := budgetServer(t, pricedBudgetModel(t, []string{"/v1/messages"}), upstream)
 		body := `{"model":"test-model","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}`
 		serveBudgetRequest(srv, http.MethodPost, "/v1/messages", body)

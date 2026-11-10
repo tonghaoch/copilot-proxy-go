@@ -19,6 +19,9 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "responses", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	w = tracked.Writer
 	rec := tracked.Record
 	rec.Backend = "responses"

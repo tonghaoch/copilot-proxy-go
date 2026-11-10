@@ -144,7 +144,8 @@ func TestBudgetConservativelyAccountsForMissingUsage(t *testing.T) {
 			}
 			budget.Complete(admission, tt.record)
 			got := budget.Snapshot()
-			if got.Blocked || got.ConservativeEstimates != 1 || math.Abs(got.EstimatedSpentUSD-tt.want) > 0.000000001 {
+			if got.Blocked || got.ConservativeEstimates != 1 || math.Abs(got.EstimatedSpentUSD-tt.want) > 0.000000001 ||
+				math.Abs(got.ReservedUSD-tt.want) > 0.000000001 || got.ReportedUsageUSD != 0 {
 				t.Fatalf("conservative budget = %+v, want spend %.3f", got, tt.want)
 			}
 			if _, err := budget.Admit(model, "messages"); err != nil {
@@ -171,6 +172,66 @@ func TestBudgetRestoresPriorSpend(t *testing.T) {
 	exhausted, err := NewTokenBudgetWithSpent(10, 11)
 	if err != nil || !exhausted.Snapshot().Blocked {
 		t.Fatalf("restored spend above limit must remain blocked: budget=%+v err=%v", exhausted, err)
+	}
+}
+
+func TestBudgetRestoresAndSeparatesReserves(t *testing.T) {
+	budget, err := NewTokenBudgetWithRestored(350, 119.133312633, 65.9597968)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := budget.Snapshot()
+	if math.Abs(got.ReportedUsageUSD-53.173515833) > 0.000000002 || math.Abs(got.ReservedUSD-65.9597968) > 0.000000002 {
+		t.Fatalf("restored split = %+v", got)
+	}
+	admission, err := budget.Admit(budgetModel(t), "messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget.Complete(admission, RequestRecord{
+		Backend: "messages", UpstreamAttempted: true, InputUsageKnown: true, OutputUsageKnown: true,
+		InputTokens: 10, OutputTokens: 5,
+	})
+	after := budget.Snapshot()
+	if after.ReservedUSD != got.ReservedUSD || after.ReportedUsageUSD <= got.ReportedUsageUSD {
+		t.Fatalf("reported usage did not increase separately from the reserve: %+v", after)
+	}
+	for _, invalid := range []float64{-1, 120, math.NaN(), math.Inf(1)} {
+		if _, err := NewTokenBudgetWithRestored(350, 119, invalid); err == nil {
+			t.Fatalf("accepted invalid reserve %v", invalid)
+		}
+	}
+}
+
+func TestBudgetSeparatesReportedUsageFromUncertainRetries(t *testing.T) {
+	model := budgetModel(t)
+	model.Capabilities.Limits = ModelLimits{MaxContextWindowTokens: 1000, MaxOutputTokens: 100}
+	for _, tt := range []struct {
+		name              string
+		record            RequestRecord
+		reported, reserve float64
+		estimates         int64
+	}{
+		{"successful", RequestRecord{Backend: "messages", UpstreamAttempted: true, InputUsageKnown: true, OutputUsageKnown: true,
+			InputTokens: 10, OutputTokens: 5, UncertainRetries: 2}, 0.02, 8.8, 2},
+		{"rejected", RequestRecord{Backend: "messages", UpstreamAttempted: true, UpstreamRejected: true,
+			UncertainRetries: 1}, 0, 4.4, 1},
+		{"missing usage", RequestRecord{Backend: "messages", UpstreamAttempted: true,
+			UncertainRetries: 1}, 0, 8.8, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, _ := NewTokenBudget(100)
+			admission, err := budget.Admit(model, "messages")
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget.Complete(admission, tt.record)
+			got := budget.Snapshot()
+			if got.Blocked || math.Abs(got.ReportedUsageUSD-tt.reported) > 1e-9 ||
+				math.Abs(got.ReservedUSD-tt.reserve) > 1e-9 || got.ConservativeEstimates != tt.estimates {
+				t.Fatalf("budget = %+v, want reported %v, reserve %v, estimates %d", got, tt.reported, tt.reserve, tt.estimates)
+			}
+		})
 	}
 }
 

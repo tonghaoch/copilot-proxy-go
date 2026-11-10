@@ -129,7 +129,7 @@ export no_proxy="$NO_PROXY"
 claude
 ```
 
-If Copilot rejects Claude Code's server-side `safeguards` field, the proxy retries that Claude Code request without the rejected field and its paired beta header. It does not fabricate safety verdicts: Claude Code falls back to its own classifier requests, which can incur token usage. Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` when launching Claude Code to use that fallback without first attempting server-side checks.
+If Copilot rejects Claude Code's server-side `safeguards` field, the proxy retries that Claude Code request without the rejected field and its paired beta header. It does not fabricate safety verdicts: Claude Code falls back to its own classifier requests, which can incur token usage. Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` when launching Claude Code to use that fallback without first attempting server-side checks. With Claude Code 2.1.302 or later, set `CLAUDE_CODE_AUTO_MODE_MODEL` to an available model ID, such as a Haiku model, to choose the client-side approval classifier separately from the main conversation. A smaller classifier can make different safety decisions; server-side classifiers ignore this setting.
 
 ## Usage with Codex CLI
 
@@ -190,11 +190,11 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 ./copilot-proxy-go start --budget-usd 200
 ```
 
-The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. If usage is incomplete, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` exposes the limit, estimate, in-flight count, conservative-estimate count, and any reason admission is blocked.
+The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. If usage is incomplete, or an earlier retry may have reached inference without reporting usage, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` and the dashboard distinguish the reported-usage estimate from the reserve for uncertain usage; both count toward the limit. A restored amount is treated as reported usage unless its reserved portion is supplied separately.
 
-This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, retries, and charges outside this process are not included. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; incomplete usage with no reliable bound (including an unknown embeddings batch) pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, and charges outside this process are not included, and retry reserves may exceed actual charges. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; incomplete usage with no reliable bound (including an unknown embeddings batch) pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
 
-Restarting normally resets the estimate. To carry it forward, note `estimated_spent_usd` from `/api/stats` after in-flight requests finish, then start with, for example, `--budget-usd 200 --budget-spent-usd 42.50`. Include a conservative reserve for any prior requests whose cost was unknown. The restored value is an estimate, not persistent billing reconciliation.
+Restarting normally resets the estimate. To carry it forward, note `estimated_spent_usd` and `reserved_usd` from `/api/stats` after in-flight requests finish, then start with, for example, `--budget-usd 200 --budget-spent-usd 42.50 --budget-reserved-usd 10`. The reserve is part of the restored total, not added to it. Include a conservative reserve for any prior requests whose cost was unknown. The restored values are estimates, not persistent billing reconciliation.
 
 ## CLI Reference
 
@@ -209,6 +209,7 @@ Flags:
       --codex                 interactive model selection for Codex CLI
       --budget-usd float      estimated per-process token-spend ceiling in USD
       --budget-spent-usd float  restore prior estimated spend (requires --budget-usd)
+      --budget-reserved-usd float  reserved portion of restored spend (requires --budget-spent-usd)
       --force-cache-ttl string  override native Messages cache breakpoints: 5m or 1h
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")

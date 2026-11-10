@@ -24,18 +24,19 @@ import (
 
 func startCmd() *cobra.Command {
 	var (
-		host           string
-		port           int
-		githubToken    string
-		accountType    string
-		showToken      bool
-		verbose        bool
-		claudeCode     bool
-		codex          bool
-		proxyEnv       bool
-		budgetUSD      float64
-		budgetSpentUSD float64
-		forceCacheTTL  string
+		host              string
+		port              int
+		githubToken       string
+		accountType       string
+		showToken         bool
+		verbose           bool
+		claudeCode        bool
+		codex             bool
+		proxyEnv          bool
+		budgetUSD         float64
+		budgetSpentUSD    float64
+		budgetReservedUSD float64
+		forceCacheTTL     string
 	)
 
 	cmd := &cobra.Command{
@@ -52,13 +53,18 @@ func startCmd() *cobra.Command {
 			}
 			var budget *state.TokenBudget
 			if cmd.Flags().Changed("budget-usd") {
+				if cmd.Flags().Changed("budget-reserved-usd") && !cmd.Flags().Changed("budget-spent-usd") {
+					return fmt.Errorf("--budget-reserved-usd requires --budget-spent-usd")
+				}
 				var err error
-				budget, err = state.NewTokenBudgetWithSpent(budgetUSD, budgetSpentUSD)
+				budget, err = state.NewTokenBudgetWithRestored(budgetUSD, budgetSpentUSD, budgetReservedUSD)
 				if err != nil {
 					return fmt.Errorf("invalid token budget: %w", err)
 				}
 			} else if cmd.Flags().Changed("budget-spent-usd") {
 				return fmt.Errorf("--budget-spent-usd requires --budget-usd")
+			} else if cmd.Flags().Changed("budget-reserved-usd") {
+				return fmt.Errorf("--budget-reserved-usd requires --budget-usd")
 			}
 
 			setupLogging(verbose)
@@ -196,6 +202,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0, "estimated per-process token-spend ceiling in USD")
 	cmd.Flags().Float64Var(&budgetSpentUSD, "budget-spent-usd", 0, "restore a prior estimated token spend in USD (requires --budget-usd)")
+	cmd.Flags().Float64Var(&budgetReservedUSD, "budget-reserved-usd", 0, "portion of restored spend reserved for unknown usage (requires --budget-spent-usd)")
 	cmd.Flags().StringVar(&forceCacheTTL, "force-cache-ttl", "", "override all native Messages cache breakpoints with 5m or 1h")
 
 	return cmd

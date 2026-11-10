@@ -29,6 +29,7 @@ type RequestRecord struct {
 
 	UpstreamAttempted      bool  `json:"-"`
 	UpstreamRejected       bool  `json:"-"`
+	UncertainRetries       int64 `json:"-"`
 	InputUsageKnown        bool  `json:"-"`
 	OutputUsageKnown       bool  `json:"-"`
 	CacheWrite5mTokens     int64 `json:"cache_write_5m_tokens,omitempty"`
