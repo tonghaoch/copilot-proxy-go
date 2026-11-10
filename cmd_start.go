@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -173,19 +174,16 @@ func startCmd() *cobra.Command {
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				cancelApp()
-				slog.Info("shutting down (30s timeout for in-flight requests)...")
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				srv.Shutdown(ctx)
-				logger.CloseAll()
-			}()
-
-			err = srv.ListenAndServe()
-			if err == http.ErrServerClosed {
-				return nil
+			defer signal.Stop(sigCh)
+			listener, err := net.Listen("tcp", srv.Addr)
+			if err != nil {
+				return err
+			}
+			err = serveUntilShutdown(srv, listener, sigCh, cancelApp)
+			if budget != nil {
+				snapshot := budget.Snapshot()
+				slog.Info("final token budget", "estimated_spent_usd", snapshot.EstimatedSpentUSD,
+					"reserved_usd", snapshot.ReservedUSD, "in_flight", snapshot.InFlight)
 			}
 			return err
 		},
@@ -206,4 +204,31 @@ func startCmd() *cobra.Command {
 	cmd.Flags().StringVar(&forceCacheTTL, "force-cache-ttl", "", "override all native Messages cache breakpoints with 5m or 1h")
 
 	return cmd
+}
+
+func serveUntilShutdown(srv *http.Server, listener net.Listener, signals <-chan os.Signal, cancelApp context.CancelFunc) error {
+	done := make(chan error, 1)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-signals:
+			cancelApp()
+			slog.Info("shutting down (30s timeout for in-flight requests)...")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			err := srv.Shutdown(ctx)
+			logger.CloseAll()
+			done <- err
+		case <-stop:
+		}
+	}()
+	err := srv.Serve(listener)
+	if err != http.ErrServerClosed {
+		return err
+	}
+	if err := <-done; err != nil {
+		return fmt.Errorf("shutting down server: %w", err)
+	}
+	return nil
 }
