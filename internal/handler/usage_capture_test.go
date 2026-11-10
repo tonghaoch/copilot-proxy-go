@@ -9,7 +9,7 @@ import (
 func TestCaptureResponsesUsage(t *testing.T) {
 	rec := &state.RequestRecord{}
 	captureResponsesStreamUsage(`{"type":"response.completed","response":{"usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":40}}}}`, rec)
-	if rec.InputTokens != 120 || rec.OutputTokens != 30 || rec.CachedTokens != 40 {
+	if rec.InputTokens != 80 || rec.OutputTokens != 30 || rec.CachedTokens != 40 {
 		t.Fatalf("unexpected usage: %+v", rec)
 	}
 }
@@ -23,7 +23,7 @@ func TestCaptureChatUsage(t *testing.T) {
 			CachedTokens: 20,
 		},
 	})
-	if rec.InputTokens != 90 || rec.OutputTokens != 10 || rec.CachedTokens != 20 {
+	if rec.InputTokens != 70 || rec.OutputTokens != 10 || rec.CachedTokens != 20 {
 		t.Fatalf("unexpected usage: %+v", rec)
 	}
 }

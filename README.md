@@ -110,7 +110,7 @@ Open `http://127.0.0.1:4141/dashboard` while the proxy is running. Local request
 ./copilot-proxy-go start --claude-code
 ```
 
-This interactively selects primary and small/fast models, saves the small model to the proxy configuration, and generates a command to run in another terminal. Use the model picker or `/models` to find models available to your account. Claude model versions are exposed in Claude Code's dashed form; models reporting a context window of at least 1,000,000 tokens also get a `[1m]` hint. This hint reflects the reported capability, not a context-window upgrade.
+This interactively selects primary, small/fast, Opus, and Fable models, saves the small model to the proxy configuration, and generates a command to run in another terminal. Use the model picker or `/models` to find models available to your account. Claude model versions are exposed in Claude Code's dashed form; models reporting a context window of at least 1,000,000 tokens also get a `[1m]` hint. This hint reflects the reported capability, not a context-window upgrade.
 
 Or set the variables manually (Bash/Zsh):
 
@@ -134,7 +134,7 @@ claude
 ./copilot-proxy-go start --codex
 ```
 
-This interactively selects a Responses-capable model and generates a Codex command, including the model's context window when reported by Copilot. Or set it manually (Bash/Zsh; replace the example model with one available to your account that supports `/responses`):
+This interactively selects a chat model and generates a Codex command, including the selected context window when reported by Copilot. Models without a native Responses endpoint are translated through the Messages or Chat Completions backend. Or set it manually (Bash/Zsh; replace the example model with one available to your account):
 
 ```bash
 export CODEX_API_KEY=copilot-proxy
@@ -159,6 +159,8 @@ Configuration is stored in `config.json` in the application data directory, alon
 
 Use `./copilot-proxy-go debug` to see the resolved paths. `smallModel` chooses the compact/warmup routing target; `compactUseSmallModel` enables compact routing and does not affect warmup routing.
 
+For native Messages requests, breakpoints default to one hour when no breakpoint in the request specifies a TTL. Set `cacheTTL` to `"5m"` for five minutes or `""` to leave client breakpoints unchanged; requests containing explicit TTLs are passed through unchanged to preserve their ordering. Responses requests translated to Messages receive cache breakpoints automatically. Cache eligibility and hits depend on the upstream model, minimum prompt length, and an unchanged prefix; one-hour cache writes may cost more than five-minute writes.
+
 API-key authentication is disabled when `auth.apiKeys` is empty. To enable it, set `auth.apiKeys` to a list of non-empty keys in `config.json`, then restart the proxy. Clients must send a configured key via `x-api-key` or `Authorization: Bearer <key>`. Replace the `copilot-proxy` placeholder in the manual client examples (and in the generated Claude Code command) with your key; Codex setup automatically uses the first configured key.
 
 Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS via a reverse proxy for access over untrusted networks. Authentication covers the dashboard and utility endpoints too; only `GET /` and `OPTIONS` requests bypass it. Without configured keys, `/token` is additionally restricted to loopback clients.
@@ -169,7 +171,7 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 |----------|--------|-------------|
 | `/` | GET | Health check |
 | `/v1/messages` | POST | Anthropic Messages API |
-| `/v1/messages/count_tokens` | POST | Approximate input-token estimation (not model-tokenizer counts) |
+| `/v1/messages/count_tokens` | POST | Upstream token count, with an approximate fallback |
 | `/chat/completions`, `/v1/chat/completions` | POST | OpenAI Chat Completions |
 | `/responses`, `/v1/responses` | POST | OpenAI Responses API |
 | `/embeddings`, `/v1/embeddings` | POST | Embeddings |

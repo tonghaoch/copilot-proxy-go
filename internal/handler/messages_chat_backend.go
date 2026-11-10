@@ -2,12 +2,19 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
+
+var errFinalChatUsage = errors.New("final chat usage received")
+
+const finalChatUsageWait = 2 * time.Second
 
 func (h *Handler) handleWithChatCompletions(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, forceAgent bool, rec *state.RequestRecord) {
 	ccReq, err := h.anthropic.ToChat(req, h.config.ExtraPrompt(normalizeModelName(req.Model)))
@@ -43,13 +50,7 @@ func (h *Handler) nonStreamChatToAnthropic(w http.ResponseWriter, resp *http.Res
 		api.ForwardError(w, err)
 		return
 	}
-	if ccResp.Usage != nil {
-		rec.InputTokens = int64(ccResp.Usage.PromptTokens)
-		rec.OutputTokens = int64(ccResp.Usage.CompletionTokens)
-		if ccResp.Usage.PromptTokensDetails != nil {
-			rec.CachedTokens = int64(ccResp.Usage.PromptTokensDetails.CachedTokens)
-		}
-	}
+	captureChatUsage(rec, ccResp.Usage)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.anthropic.FromChat(&ccResp))
 }
@@ -61,18 +62,61 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		return
 	}
 	streamState := NewAnthropicStreamState(model)
-	streamErr := h.streams.Read(resp.Body, func(eventType, data string) error {
-		var chunk ChatCompletionChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return err
-		}
-		for _, event := range streamState.TranslateChunk(&chunk) {
+	var terminal []SSEEvent
+	var usageTimer *time.Timer
+	var usageTimedOut atomic.Bool
+	finalUsage := false
+	writeEvents := func(events []SSEEvent) error {
+		for _, event := range events {
+			if event.Event == "message_delta" || event.Event == "message_stop" {
+				terminal = append(terminal, event)
+				continue
+			}
 			if err := writeSSE(w, flusher, event.Event, event.Data); err != nil {
 				return err
 			}
 		}
 		return nil
+	}
+	streamErr := h.streams.Read(resp.Body, func(eventType, data string) error {
+		var chunk ChatCompletionChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return err
+		}
+		if len(chunk.Choices) > 0 {
+			finalUsage = false
+		}
+		if chunk.Usage != nil && (len(chunk.Choices) == 0 || chunk.Choices[0].FinishReason != nil) {
+			finalUsage = true
+		}
+		if err := writeEvents(streamState.TranslateChunk(&chunk)); err != nil {
+			return err
+		}
+		if streamState.IsComplete() {
+			if finalUsage {
+				return errFinalChatUsage
+			}
+			if usageTimer == nil {
+				usageTimer = time.AfterFunc(finalChatUsageWait, func() {
+					usageTimedOut.Store(true)
+					resp.Body.Close()
+				})
+			}
+		}
+		return nil
 	})
+	if usageTimer != nil {
+		usageTimer.Stop()
+	}
+	if errors.Is(streamErr, errFinalChatUsage) {
+		streamErr = nil
+	} else if usageTimedOut.Load() {
+		slog.Warn("chat stream ended without final usage after finish_reason")
+		streamErr = nil
+	}
+	if streamErr == nil && !streamState.IsComplete() {
+		streamErr = errors.New("chat stream ended before finish_reason")
+	}
 	if streamErr != nil {
 		rec.Error = streamErr.Error()
 		slog.Error("streaming error", "error", streamErr)
@@ -80,10 +124,18 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 	}
 	// Upstream can stop before finish_reason; end the message ourselves.
 	if !streamState.IsComplete() {
-		for _, event := range streamState.Finish("end_turn") {
-			if err := writeSSE(w, flusher, event.Event, event.Data); err != nil {
-				break
-			}
+		if err := writeEvents(streamState.Finish("end_turn")); err != nil {
+			rec.Error = err.Error()
+		}
+	}
+	for _, event := range terminal {
+		if delta, ok := event.Data.(MessageDeltaEvent); ok {
+			delta.Usage = streamState.deltaUsage()
+			event.Data = delta
+		}
+		if err := writeSSE(w, flusher, event.Event, event.Data); err != nil {
+			rec.Error = err.Error()
+			break
 		}
 	}
 	input, output, cached := streamState.TokenCounts()

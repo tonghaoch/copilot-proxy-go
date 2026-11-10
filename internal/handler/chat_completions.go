@@ -130,9 +130,8 @@ func captureChatUsage(rec *state.RequestRecord, usage *ChatCompletionUsage) {
 	if usage == nil {
 		return
 	}
-	rec.InputTokens = int64(usage.PromptTokens)
-	rec.OutputTokens = int64(usage.CompletionTokens)
-	if usage.PromptTokensDetails != nil {
-		rec.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
-	}
+	u := usage.toAnthropic()
+	rec.InputTokens = int64(u.InputTokens)
+	rec.OutputTokens = int64(u.OutputTokens)
+	rec.CachedTokens = int64(u.CacheReadInputTokens)
 }

@@ -41,6 +41,7 @@ type CopilotClient interface {
 	ProxyMessages(context.Context, []byte, string, bool, bool) (*http.Response, error)
 	ProxyResponses(context.Context, []byte, bool, bool) (*http.Response, error)
 	ProxyEmbeddings(context.Context, []byte) (*http.Response, error)
+	ProxyCountTokens(context.Context, []byte, string) (*http.Response, error)
 }
 
 // HTTPDoer is used for GitHub endpoints that are not part of CopilotClient.

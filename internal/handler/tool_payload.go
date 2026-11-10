@@ -26,19 +26,71 @@ func getToolResultText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func stripCacheControlScope(v any) {
-	switch val := v.(type) {
-	case map[string]any:
-		if cc, ok := val["cache_control"].(map[string]any); ok {
-			delete(cc, "scope")
+func visitCacheControls(payload map[string]any, visit func(map[string]any)) {
+	var visitBlock func(any)
+	visitBlock = func(v any) {
+		if block, ok := v.(map[string]any); ok {
+			if cc, ok := block["cache_control"].(map[string]any); ok {
+				visit(cc)
+			}
+			if block["type"] == "tool_result" {
+				if content, ok := block["content"].([]any); ok {
+					for _, nested := range content {
+						visitBlock(nested)
+					}
+				}
+			}
 		}
-		for _, child := range val {
-			stripCacheControlScope(child)
+	}
+	visitBlock(payload)
+	for _, field := range []string{"tools", "system"} {
+		if blocks, ok := payload[field].([]any); ok {
+			for _, block := range blocks {
+				visitBlock(block)
+			}
 		}
-	case []any:
-		for _, item := range val {
-			stripCacheControlScope(item)
+	}
+	if messages, ok := payload["messages"].([]any); ok {
+		for _, raw := range messages {
+			if message, ok := raw.(map[string]any); ok {
+				if blocks, ok := message["content"].([]any); ok {
+					for _, block := range blocks {
+						visitBlock(block)
+					}
+				}
+			}
 		}
+	}
+}
+
+func stripCacheControlScope(payload map[string]any) {
+	visitCacheControls(payload, func(cc map[string]any) {
+		delete(cc, "scope")
+	})
+}
+
+// applyCacheTTL sets ttl on every cache_control breakpoint, unless the client
+// already chose a ttl on any of them: Anthropic requires 1h breakpoints to
+// precede 5m ones, so mixing our default into an explicit layout could
+// produce an invalid request. Main agents and subagents both pass through
+// here, so both keep their prefixes warm for an hour by default.
+func applyCacheTTL(payload map[string]any, ttl string) {
+	if ttl == "" {
+		return
+	}
+	var breakpoints []map[string]any
+	explicit := false
+	visitCacheControls(payload, func(cc map[string]any) {
+		if _, has := cc["ttl"]; has {
+			explicit = true
+		}
+		breakpoints = append(breakpoints, cc)
+	})
+	if explicit {
+		return
+	}
+	for _, cc := range breakpoints {
+		cc["ttl"] = ttl
 	}
 }
 

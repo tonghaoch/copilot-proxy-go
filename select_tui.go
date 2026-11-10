@@ -18,6 +18,8 @@ type selectPalette struct {
 var (
 	palettePrimary = selectPalette{border: lipgloss.Color("63"), accent: lipgloss.Color("12")}
 	paletteSmall   = selectPalette{border: lipgloss.Color("36"), accent: lipgloss.Color("42")}
+	paletteOpus    = selectPalette{border: lipgloss.Color("135"), accent: lipgloss.Color("177")}
+	paletteFable   = selectPalette{border: lipgloss.Color("208"), accent: lipgloss.Color("214")}
 )
 
 type selectModel struct {

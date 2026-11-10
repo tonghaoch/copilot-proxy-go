@@ -3,15 +3,16 @@ package handler
 // --- Chat Completions Request (what we send to Copilot) ---
 
 type ChatCompletionRequest struct {
-	Model       string       `json:"model"`
-	Messages    []OpenAIMsg  `json:"messages"`
-	MaxTokens   *int         `json:"max_tokens,omitempty"`
-	Temperature *float64     `json:"temperature,omitempty"`
-	TopP        *float64     `json:"top_p,omitempty"`
-	Stream      bool         `json:"stream"`
-	Tools       []OpenAITool `json:"tools,omitempty"`
-	ToolChoice  any          `json:"tool_choice,omitempty"`
-	Stop        any          `json:"stop,omitempty"`
+	Model           string       `json:"model"`
+	Messages        []OpenAIMsg  `json:"messages"`
+	MaxTokens       *int         `json:"max_tokens,omitempty"`
+	Temperature     *float64     `json:"temperature,omitempty"`
+	TopP            *float64     `json:"top_p,omitempty"`
+	Stream          bool         `json:"stream"`
+	Tools           []OpenAITool `json:"tools,omitempty"`
+	ToolChoice      any          `json:"tool_choice,omitempty"`
+	Stop            any          `json:"stop,omitempty"`
+	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
 }
 
 type OpenAIMsg struct {
@@ -83,7 +84,24 @@ type ChatCompletionM struct {
 type ChatCompletionUsage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens,omitempty"`
 	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// toAnthropic converts to Anthropic convention, where input_tokens excludes
+// cached tokens. Gemini reports reasoning outside completion_tokens (a
+// top-level reasoning_tokens) but counts it in total_tokens, so output is
+// taken from total-prompt when that is larger.
+func (u *ChatCompletionUsage) toAnthropic() AnthropicUsage {
+	cached := 0
+	if u.PromptTokensDetails != nil {
+		cached = u.PromptTokensDetails.CachedTokens
+	}
+	return AnthropicUsage{
+		InputTokens:          u.PromptTokens - cached,
+		OutputTokens:         max(u.CompletionTokens, u.TotalTokens-u.PromptTokens),
+		CacheReadInputTokens: cached,
+	}
 }
 
 type PromptTokensDetails struct {

@@ -59,6 +59,9 @@ func startCmd() *cobra.Command {
 			if err := config.Load(); err != nil {
 				slog.Warn("failed to load config, using defaults: " + err.Error())
 			}
+			if err := config.Get().ValidateCacheTTL(); err != nil {
+				return err
+			}
 			config.MergeDefaults()
 
 			if proxyEnv {
@@ -91,6 +94,28 @@ func startCmd() *cobra.Command {
 			}
 			state.Global.SetModels(models)
 			slog.Info("models loaded", "count", len(models))
+
+			// Admins can change which models are enabled at any time, so keep the
+			// cache fresh. A failed refresh keeps the previous list.
+			// ponytail: fixed 10m poll, no ETag; add conditional fetch if Copilot rate-limits it.
+			go func() {
+				ticker := time.NewTicker(10 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-appCtx.Done():
+						return
+					case <-ticker.C:
+						fresh, err := copilotClient.FetchModels(appCtx)
+						if err != nil {
+							slog.Warn("model refresh failed, keeping cached list", "error", err)
+							continue
+						}
+						state.Global.SetModels(fresh)
+						slog.Debug("models refreshed", "count", len(fresh))
+					}
+				}
+			}()
 
 			if claudeCode {
 				if err := runClaudeCodeSetup(port, models); err != nil {

@@ -14,6 +14,8 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
+var errNativeMessageStop = errors.New("native stream terminal event")
+
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
 // rawBody is the original request bytes to preserve unknown fields.
@@ -30,19 +32,23 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		payload["model"] = req.Model
 	}
 
-	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
-	stripCacheControlScope(payload)
-
 	// Strip tools Copilot rejects (e.g. image_generation)
 	stripUnsupportedToolsInMap(payload)
 
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload)
 
+	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
+
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
 	// Copilot rejects it.
 	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state, h.config)
+	if v := thinkingRewriteHeader(req, payload); v != "" {
+		w.Header().Set("X-Copilot-Proxy-Thinking", v)
+	}
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -106,8 +112,11 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 				return err
 			}
 			flusher.Flush()
+			if eventType == "message_stop" || eventType == "error" {
+				return errNativeMessageStop
+			}
 			return nil
-		}); err != nil {
+		}); err != nil && !errors.Is(err, errNativeMessageStop) {
 			rec.Error = err.Error()
 			slog.Error("native messages streaming error", "error", err)
 		}
@@ -126,6 +135,7 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 			rec.InputTokens = int64(anthResp.Usage.InputTokens)
 			rec.OutputTokens = int64(anthResp.Usage.OutputTokens)
 			rec.CachedTokens = int64(anthResp.Usage.CacheReadInputTokens)
+			rec.CacheCreationTokens = int64(anthResp.Usage.CacheCreationInputTokens)
 		}
 	}
 }
@@ -139,11 +149,21 @@ func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
 		if json.Unmarshal([]byte(data), &evt) == nil {
 			rec.InputTokens = int64(evt.Message.Usage.InputTokens)
 			rec.CachedTokens = int64(evt.Message.Usage.CacheReadInputTokens)
+			rec.CacheCreationTokens = int64(evt.Message.Usage.CacheCreationInputTokens)
 		}
 	case "message_delta":
 		var evt MessageDeltaEvent
 		if json.Unmarshal([]byte(data), &evt) == nil {
 			rec.OutputTokens = int64(evt.Usage.OutputTokens)
+			if evt.Usage.InputTokens != nil {
+				rec.InputTokens = int64(*evt.Usage.InputTokens)
+			}
+			if evt.Usage.CacheReadInputTokens != nil {
+				rec.CachedTokens = int64(*evt.Usage.CacheReadInputTokens)
+			}
+			if evt.Usage.CacheCreationInputTokens != nil {
+				rec.CacheCreationTokens = int64(*evt.Usage.CacheCreationInputTokens)
+			}
 		}
 	}
 }
@@ -236,6 +256,21 @@ func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, m
 	}
 	setOutputConfigEffort(payload, effective)
 	return effective
+}
+
+// thinkingRewriteHeader describes a thinking.type=enabled request that was
+// rewritten to adaptive, so the client can tell its budget was not used.
+// Copilot rejects enabled for some models and accepts adaptive. Returns "" when
+// no rewrite happened.
+func thinkingRewriteHeader(req *AnthropicRequest, payload map[string]any) string {
+	if req.Thinking == nil || req.Thinking.Type != "enabled" {
+		return ""
+	}
+	t, ok := payload["thinking"].(map[string]string)
+	if !ok || t["type"] != "adaptive" {
+		return ""
+	}
+	return "enabled-rewritten-to-adaptive"
 }
 
 // clientRequestedEffort reads the effort the caller asked for, or "" if unset.
@@ -341,6 +376,8 @@ func filterBetaHeader(header string) string {
 	drop := map[string]bool{
 		"claude-code-20250219":  true,
 		"context-1m-2025-08-07": true,
+		// Copilot honours cache_control ttl natively and rejects this beta.
+		"extended-cache-ttl-2025-04-11": true,
 	}
 	parts := strings.Split(header, ",")
 	var filtered []string

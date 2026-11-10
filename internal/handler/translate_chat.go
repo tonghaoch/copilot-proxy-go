@@ -84,6 +84,11 @@ func translateToOpenAIWithModels(req *AnthropicRequest, extraPrompt string, mode
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 	}
+	if req.chatReasoningEffort != "" {
+		ccReq.ReasoningEffort = anthropicEffortToResponses(req.chatReasoningEffort)
+	} else if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
+		ccReq.ReasoningEffort = anthropicEffortToResponses(req.OutputConfig.Effort)
+	}
 
 	// Max tokens
 	maxTokens := req.MaxTokens
@@ -135,6 +140,11 @@ func translateUserMessage(blocks []ContentBlock, addThinkingReminder bool) []Ope
 			Content:    getToolResultText(tr.Content),
 			ToolCallID: tr.ToolUseID,
 		})
+		for _, block := range ParseMessageContent(tr.Content) {
+			if block.Type == "image" {
+				otherBlocks = append(otherBlocks, block)
+			}
+		}
 	}
 
 	// Other content becomes a user message
@@ -191,7 +201,10 @@ func buildUserContent(blocks []ContentBlock, addReminder bool) any {
 			parts = append(parts, OpenAIContentPart{Type: "text", Text: b.Text})
 		case "image":
 			if b.Source != nil {
-				url := fmt.Sprintf("data:%s;base64,%s", b.Source.MediaType, b.Source.Data)
+				url := b.Source.URL
+				if b.Source.Type == "base64" {
+					url = fmt.Sprintf("data:%s;base64,%s", b.Source.MediaType, b.Source.Data)
+				}
 				parts = append(parts, OpenAIContentPart{
 					Type:     "image_url",
 					ImageURL: &OpenAIImgURL{URL: url},
@@ -397,13 +410,7 @@ func translateToAnthropic(resp *ChatCompletionResponse) *AnthropicResponse {
 	// Usage
 	usage := AnthropicUsage{}
 	if resp.Usage != nil {
-		usage.InputTokens = resp.Usage.PromptTokens
-		usage.OutputTokens = resp.Usage.CompletionTokens
-		if resp.Usage.PromptTokensDetails != nil {
-			cached := resp.Usage.PromptTokensDetails.CachedTokens
-			usage.CacheReadInputTokens = cached
-			usage.InputTokens -= cached
-		}
+		usage = resp.Usage.toAnthropic()
 	}
 
 	return &AnthropicResponse{

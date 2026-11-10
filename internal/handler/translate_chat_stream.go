@@ -18,13 +18,28 @@ type AnthropicStreamState struct {
 	blockIndex    int
 	openBlockType string      // "text", "tool_use", "thinking", ""
 	toolCallMap   map[int]int // OpenAI tool call index -> Anthropic block index
+	deferredTools map[int]*deferredToolCall
+	deferred      []deferredChatPart
 	hasStarted    bool
 	completed     bool
 	model         string
 	inputTokens   int
 	outputTokens  int
 	cachedTokens  int
+	hasUsage      bool
 	isClaudeModel bool
+}
+
+type deferredToolCall struct {
+	index int
+	id    string
+	name  string
+	args  strings.Builder
+}
+
+type deferredChatPart struct {
+	tool  *deferredToolCall
+	delta ChatCompletionChunkDelta
 }
 
 // NewAnthropicStreamState creates a new stream state.
@@ -74,6 +89,15 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 
 	choice := chunk.Choices[0]
 	delta := choice.Delta
+
+	// Anthropic content blocks must close in order, while Chat tool fragments
+	// may be interleaved. Keep the first tool streaming and defer later blocks.
+	if s.openBlockType == "tool_use" && (delta.Content != nil || delta.ReasoningText != nil || delta.ReasoningOpaque != nil) {
+		s.deferred = append(s.deferred, deferredChatPart{delta: ChatCompletionChunkDelta{
+			Content: delta.Content, ReasoningText: delta.ReasoningText, ReasoningOpaque: delta.ReasoningOpaque,
+		}})
+		delta.Content, delta.ReasoningText, delta.ReasoningOpaque = nil, nil, nil
+	}
 
 	// Handle reasoning_text (thinking)
 	if delta.ReasoningText != nil && *delta.ReasoningText != "" {
@@ -188,6 +212,10 @@ func (s *AnthropicStreamState) TranslateChunk(chunk *ChatCompletionChunk) []SSEE
 	for _, tc := range delta.ToolCalls {
 		blockIdx, exists := s.toolCallMap[tc.Index]
 		if !exists {
+			if s.openBlockType == "tool_use" {
+				s.deferToolCall(tc)
+				continue
+			}
 			// New tool call: close current block, open tool_use
 			events = append(events, s.closeCurrentBlock()...)
 			s.blockIndex++
@@ -248,7 +276,7 @@ func (s *AnthropicStreamState) Finish(stopReason string) []SSEEvent {
 
 func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
 	s.completed = true
-	events := s.closeCurrentBlock()
+	events := s.finishBlocks()
 	if !s.hasStarted {
 		s.hasStarted = true
 		events = append(events, SSEEvent{
@@ -258,37 +286,87 @@ func (s *AnthropicStreamState) finish(stopReason string) []SSEEvent {
 			}},
 		})
 	}
+	usage := s.deltaUsage()
 	return append(events,
 		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
 			Type:  "message_delta",
 			Delta: MessageDelta{StopReason: stopReason},
-			Usage: DeltaUsage{OutputTokens: s.outputTokens},
+			Usage: usage,
 		}},
 		SSEEvent{Event: "message_stop", Data: MessageStopEvent{Type: "message_stop"}},
 	)
 }
 
-// captureUsage updates the metrics counters from any chunk carrying usage.
-// OpenAI commonly sends usage only in a final chunk with no choices, while
-// Anthropic needs non-cached input tokens in message_start. Keep the internal
-// input counter as the full prompt total so metrics remain consistent with the
-// non-streaming Chat, Responses, and native Messages paths.
+func (s *AnthropicStreamState) deferToolCall(tc ToolCallDelta) {
+	if s.deferredTools == nil {
+		s.deferredTools = make(map[int]*deferredToolCall)
+	}
+	call := s.deferredTools[tc.Index]
+	if call == nil {
+		call = &deferredToolCall{index: tc.Index}
+		s.deferredTools[tc.Index] = call
+		s.deferred = append(s.deferred, deferredChatPart{tool: call})
+	}
+	if call.id == "" && tc.ID != "" {
+		call.id = tc.ID
+	}
+	if tc.Function != nil {
+		if call.name == "" && tc.Function.Name != "" {
+			call.name = tc.Function.Name
+		}
+		call.args.WriteString(tc.Function.Arguments)
+	}
+}
+
+func (s *AnthropicStreamState) finishBlocks() []SSEEvent {
+	events := s.closeCurrentBlock()
+	if len(s.deferred) == 0 {
+		return events
+	}
+	next := NewAnthropicStreamState(s.model)
+	next.hasStarted = true
+	next.blockIndex = s.blockIndex
+	for _, part := range s.deferred {
+		delta := part.delta
+		if part.tool != nil {
+			delta.ToolCalls = []ToolCallDelta{{
+				Index: part.tool.index, ID: part.tool.id,
+				Function: &ToolCallFuncDelta{Name: part.tool.name, Arguments: part.tool.args.String()},
+			}}
+		}
+		events = append(events, next.TranslateChunk(&ChatCompletionChunk{
+			Choices: []ChatCompletionChunkChoice{{Delta: delta}},
+		})...)
+		if part.tool != nil {
+			events = append(events, next.closeCurrentBlock()...)
+		}
+	}
+	events = append(events, next.closeCurrentBlock()...)
+	s.blockIndex = next.blockIndex
+	s.deferred, s.deferredTools = nil, nil
+	return events
+}
+
+func (s *AnthropicStreamState) deltaUsage() DeltaUsage {
+	usage := DeltaUsage{OutputTokens: s.outputTokens}
+	if s.hasUsage {
+		input, cached := s.inputTokens, s.cachedTokens
+		usage.InputTokens, usage.CacheReadInputTokens = &input, &cached
+	}
+	return usage
+}
+
+// captureUsage updates the counters from any chunk carrying usage. OpenAI
+// commonly sends usage only in a final chunk with no choices, after
+// message_start went out, so finish repeats input in message_delta.
 func (s *AnthropicStreamState) captureUsage(usage *ChatCompletionUsage) AnthropicUsage {
 	if usage == nil {
 		return AnthropicUsage{}
 	}
-	cached := 0
-	if usage.PromptTokensDetails != nil {
-		cached = usage.PromptTokensDetails.CachedTokens
-	}
-	s.inputTokens = usage.PromptTokens
-	s.outputTokens = usage.CompletionTokens
-	s.cachedTokens = cached
-	return AnthropicUsage{
-		InputTokens:          usage.PromptTokens - cached,
-		OutputTokens:         usage.CompletionTokens,
-		CacheReadInputTokens: cached,
-	}
+	u := usage.toAnthropic()
+	s.hasUsage = true
+	s.inputTokens, s.outputTokens, s.cachedTokens = u.InputTokens, u.OutputTokens, u.CacheReadInputTokens
+	return u
 }
 
 func (s *AnthropicStreamState) closeCurrentBlock() []SSEEvent {

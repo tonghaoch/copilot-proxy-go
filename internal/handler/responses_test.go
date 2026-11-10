@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -203,6 +204,10 @@ func (c *capturingResponsesCopilot) ProxyResponses(_ context.Context, body []byt
 		Header:     make(http.Header),
 		Body:       io.NopCloser(bytes.NewBufferString(`{"id":"response-test","status":"completed","output":[]}`)),
 	}, nil
+}
+
+func (*capturingResponsesCopilot) ProxyCountTokens(context.Context, []byte, string) (*http.Response, error) {
+	return nil, errors.New("not implemented")
 }
 
 func (*capturingResponsesCopilot) ProxyEmbeddings(context.Context, []byte) (*http.Response, error) {

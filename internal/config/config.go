@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -17,6 +18,29 @@ type Config struct {
 	ModelReasoningEfforts map[string]string `json:"modelReasoningEfforts"`
 	UseFunctionApplyPatch bool              `json:"useFunctionApplyPatch"`
 	CompactUseSmallModel  bool              `json:"compactUseSmallModel"`
+	// CacheTTL is applied to Anthropic cache_control breakpoints that carry no
+	// ttl: "1h" (default) or "5m". Set to "" to forward breakpoints unchanged.
+	CacheTTL *string `json:"cacheTTL,omitempty"`
+}
+
+// DefaultCacheTTL keeps prompt caches warm across the pauses of an agent
+// session; Copilot honours ttl "1h" without the extended-cache-ttl beta.
+const DefaultCacheTTL = "1h"
+
+// EffectiveCacheTTL returns the configured cache TTL, defaulting to 1h.
+func (c *Config) EffectiveCacheTTL() string {
+	if c.CacheTTL == nil {
+		return DefaultCacheTTL
+	}
+	return *c.CacheTTL
+}
+
+func (c *Config) ValidateCacheTTL() error {
+	ttl := c.EffectiveCacheTTL()
+	if ttl != "" && ttl != "5m" && ttl != "1h" {
+		return fmt.Errorf("invalid cacheTTL %q: expected 5m, 1h, or an empty string", ttl)
+	}
+	return nil
 }
 
 type AuthConfig struct {
@@ -149,6 +173,10 @@ func cloneConfig(cfg *Config) *Config {
 	cloned.Auth.APIKeys = append([]string(nil), cfg.Auth.APIKeys...)
 	cloned.ExtraPrompts = cloneStringMap(cfg.ExtraPrompts)
 	cloned.ModelReasoningEfforts = cloneStringMap(cfg.ModelReasoningEfforts)
+	if cfg.CacheTTL != nil {
+		ttl := *cfg.CacheTTL
+		cloned.CacheTTL = &ttl
+	}
 	return &cloned
 }
 

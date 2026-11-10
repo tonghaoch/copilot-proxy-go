@@ -70,19 +70,23 @@ type ResponsesOutput struct {
 	Content          []OutputContent `json:"content,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
+	Namespace        string          `json:"namespace,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
+	Input            *string         `json:"input,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
 	Summary          []SummaryItem   `json:"summary,omitempty"`
 }
 
 type OutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Annotations []any  `json:"annotations"`
 }
 
 type ResponsesUsage struct {
 	InputTokens        int                 `json:"input_tokens"`
 	OutputTokens       int                 `json:"output_tokens"`
+	TotalTokens        int                 `json:"total_tokens"`
 	InputTokensDetails *InputTokensDetails `json:"input_tokens_details,omitempty"`
 }
 

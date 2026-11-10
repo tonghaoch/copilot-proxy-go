@@ -39,12 +39,16 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	rec.RoutedModel = modelID
 
 	model := h.state.FindModel(modelID)
-	if model == nil || !isResponsesSupported(model) {
+	if model != nil && !isResponsesSupported(model) {
+		h.responsesViaMessages(w, r, payload, modelID, model, rec)
+		return
+	}
+	if model == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]string{
-				"message": "This model does not support the responses endpoint",
+				"message": "unknown model",
 				"type":    "invalid_request_error",
 			},
 		})

@@ -20,6 +20,8 @@ type AnthropicRequest struct {
 	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
 	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
 	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`
+
+	chatReasoningEffort string
 }
 
 type AnthropicMeta struct {
@@ -28,7 +30,7 @@ type AnthropicMeta struct {
 
 type ThinkingConfig struct {
 	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type OutputConfig struct {
@@ -148,8 +150,9 @@ type DeltaUsage struct {
 	OutputTokens int `json:"output_tokens"`
 	// Optional cumulative updates: nil leaves the message_start counts intact,
 	// while a pointer to zero explicitly updates a count to zero.
-	InputTokens          *int `json:"input_tokens,omitempty"`
-	CacheReadInputTokens *int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              *int `json:"input_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 type MessageStopEvent struct {

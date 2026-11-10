@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,10 @@ func TestResponsesContractMapsUpstreamRateLimit(t *testing.T) {
 		t.Fatalf("unexpected error body: %s", recorder.Body.String())
 	}
 }
+func (*contractCopilot) ProxyCountTokens(context.Context, []byte, string) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (*contractCopilot) ProxyEmbeddings(context.Context, []byte) (*http.Response, error) {
 	panic("unexpected embeddings request")
 }
@@ -207,6 +212,17 @@ func TestResponsesContractRejectsMalformedJSONBeforeUpstream(t *testing.T) {
 	defer upstream.mu.Unlock()
 	if upstream.requests != 0 {
 		t.Fatal("malformed request reached upstream")
+	}
+}
+
+func TestCountTokensNullUsesMalformedInputFallback(t *testing.T) {
+	srv := server.NewWithHandler(server.Options{}, handler.New(handler.Dependencies{Copilot: &contractCopilot{}}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewBufferString("null"))
+	setTestAuthorization(req)
+	recorder := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"input_tokens":1`)) {
+		t.Fatalf("unexpected null response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
