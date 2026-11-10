@@ -3,6 +3,7 @@ package handler
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -243,5 +244,41 @@ func TestResponsesViaMessagesCancelsUpstreamOnTranslationError(t *testing.T) {
 	}
 	if body := recorder.Body.String(); !strings.Contains(body, "event: error") || strings.Contains(body, "response.completed") {
 		t.Fatalf("translation failure was not reported: %s", body)
+	}
+}
+
+func TestResponsesViaChatKeepsInterleavedToolCallsSeparate(t *testing.T) {
+	chunks := []string{
+		`data: {"id":"c","model":"claude-test","choices":[{"delta":{"tool_calls":[{"index":0,"id":"t0","function":{"name":"shell","arguments":"{\"cmd\":"}}]}}]}`,
+		`data: {"id":"c","model":"claude-test","choices":[{"delta":{"tool_calls":[{"index":1,"id":"t1","function":{"name":"apply_patch","arguments":"{\"input\":\"a"}}]}}]}`,
+		`data: {"id":"c","model":"claude-test","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}`,
+		`data: {"id":"c","model":"claude-test","choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"b\"}"}}]}}]}`,
+		`data: {"id":"c","model":"claude-test","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+	}
+	upstream := &streamingMessagesCopilot{body: io.NopCloser(strings.NewReader(strings.Join(chunks, "\n\n") + "\n\n"))}
+	recorder := httptest.NewRecorder()
+	body := `{"model":"claude-test","input":"hello","stream":true,"tools":[{"type":"function","name":"shell","parameters":{"type":"object"}},{"type":"custom","name":"apply_patch"}]}`
+	streamingResponsesHandler(upstream, "/chat/completions").Responses(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var completed []map[string]any
+	err := readSSE(strings.NewReader(recorder.Body.String()), func(eventType, data string) error {
+		if eventType == "response.output_item.done" {
+			var event struct {
+				Item map[string]any `json:"item"`
+			}
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				return err
+			}
+			completed = append(completed, event.Item)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed) != 2 || completed[0]["arguments"] != `{"cmd":"ls"}` || completed[1]["input"] != "ab" {
+		t.Fatalf("interleaved calls = %v, stream = %s", completed, recorder.Body.String())
 	}
 }

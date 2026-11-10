@@ -15,6 +15,7 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 		Model:  resp.Model,
 		Status: "completed",
 		Usage:  anthropicUsageToResponses(resp.Usage),
+		Output: []ResponsesOutput{},
 	}
 	if resp.StopReason == "max_tokens" {
 		result.Status = "incomplete"
@@ -28,15 +29,16 @@ func anthropicToResponsesResult(resp *AnthropicResponse, customTools map[string]
 			text.WriteString(block.Text)
 			result.Output = append(result.Output, ResponsesOutput{
 				Type:    "message",
-				ID:      "msg_" + resp.ID,
+				ID:      fmt.Sprintf("msg_%s_%d", resp.ID, len(result.Output)),
 				Status:  "completed",
 				Role:    "assistant",
-				Content: []OutputContent{{Type: "output_text", Text: block.Text}},
+				Content: []OutputContent{{Type: "output_text", Text: block.Text, Annotations: []any{}}},
 			})
 		case "thinking":
 			result.Output = append(result.Output, ResponsesOutput{
 				Type:             "reasoning",
-				ID:               "rs_" + resp.ID,
+				ID:               fmt.Sprintf("rs_%s_%d", resp.ID, len(result.Output)),
+				Status:           "completed",
 				Summary:          []SummaryItem{{Type: "summary_text", Text: block.Thinking}},
 				EncryptedContent: block.Signature,
 			})
@@ -65,9 +67,9 @@ func toolCallItem(block ContentBlock, customTools map[string]bool) (ResponsesOut
 		if args.Input == nil {
 			return ResponsesOutput{}, fmt.Errorf("custom tool %q did not supply an input string", block.Name)
 		}
-		return ResponsesOutput{Type: "custom_tool_call", Status: "completed", CallID: block.ID, Name: block.Name, Input: args.Input}, nil
+		return ResponsesOutput{Type: "custom_tool_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: block.Name, Input: args.Input}, nil
 	}
-	return ResponsesOutput{Type: "function_call", Status: "completed", CallID: block.ID, Name: block.Name, Arguments: string(block.Input)}, nil
+	return ResponsesOutput{Type: "function_call", ID: block.ID, Status: "completed", CallID: block.ID, Name: block.Name, Arguments: string(block.Input)}, nil
 }
 
 // responsesStreamWriter turns an Anthropic SSE stream into Responses SSE events.
@@ -81,6 +83,7 @@ type responsesStreamWriter struct {
 
 	seq        int
 	outputIdx  int
+	blockIndex int
 	block      *ContentBlock
 	itemID     string
 	text       strings.Builder
@@ -109,12 +112,16 @@ func (s *responsesStreamWriter) send(eventType string, fields map[string]any) er
 }
 
 func (s *responsesStreamWriter) responseObject(status string) map[string]any {
+	output := s.output
+	if output == nil {
+		output = []ResponsesOutput{}
+	}
 	return map[string]any{
 		"id":     s.respID,
 		"object": "response",
 		"model":  s.model,
 		"status": status,
-		"output": s.output,
+		"output": output,
 	}
 }
 
@@ -155,14 +162,28 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			return err
 		}
+		if s.block != nil {
+			return fmt.Errorf("content block %d started before block %d stopped", ev.Index, s.blockIndex)
+		}
+		s.blockIndex = ev.Index
 		return s.openBlock(ev.ContentBlock)
 	case "content_block_delta":
 		var ev ContentBlockDeltaEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			return err
 		}
+		if s.block == nil || ev.Index != s.blockIndex {
+			return fmt.Errorf("delta for unopened content block %d", ev.Index)
+		}
 		return s.delta(ev.Delta)
 	case "content_block_stop":
+		var ev ContentBlockStopEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return err
+		}
+		if s.block == nil || ev.Index != s.blockIndex {
+			return fmt.Errorf("stop for unopened content block %d", ev.Index)
+		}
 		return s.closeBlock()
 	case "message_delta":
 		var ev MessageDeltaEvent
@@ -173,6 +194,9 @@ func (s *responsesStreamWriter) Handle(eventType, data string) error {
 		s.usage.OutputTokens = ev.Usage.OutputTokens
 		s.mergeUsage(ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens, ev.Usage.CacheCreationInputTokens)
 	case "message_stop":
+		if s.block != nil {
+			return fmt.Errorf("message stopped before content block %d", s.blockIndex)
+		}
 		status := "completed"
 		event := "response.completed"
 		if s.stopReason == "max_tokens" {
@@ -226,23 +250,49 @@ func (s *responsesStreamWriter) openBlock(block ContentBlock) error {
 	s.signature = ""
 	switch block.Type {
 	case "text":
-		s.itemID = "msg_" + s.respID
-		return s.send("response.output_item.added", map[string]any{
+		s.itemID = fmt.Sprintf("msg_%s_%d", s.respID, s.outputIdx)
+		if err := s.send("response.output_item.added", map[string]any{
 			"output_index": s.outputIdx,
 			"item":         map[string]any{"type": "message", "id": s.itemID, "status": "in_progress", "role": "assistant", "content": []any{}},
-		})
+		}); err != nil {
+			return err
+		}
+		if err := s.send("response.content_part.added", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "content_index": 0,
+			"part": OutputContent{Type: "output_text", Text: "", Annotations: []any{}},
+		}); err != nil {
+			return err
+		}
+		if block.Text != "" {
+			return s.delta(Delta{Type: "text_delta", Text: block.Text})
+		}
+		return nil
 	case "thinking":
-		s.itemID = "rs_" + s.respID
-		return s.send("response.output_item.added", map[string]any{
+		s.itemID = fmt.Sprintf("rs_%s_%d", s.respID, s.outputIdx)
+		if err := s.send("response.output_item.added", map[string]any{
 			"output_index": s.outputIdx,
 			"item":         map[string]any{"type": "reasoning", "id": s.itemID, "status": "in_progress", "summary": []any{}},
-		})
+		}); err != nil {
+			return err
+		}
+		if err := s.send("response.reasoning_summary_part.added", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "summary_index": 0,
+			"part": SummaryItem{Type: "summary_text", Text: ""},
+		}); err != nil {
+			return err
+		}
+		s.signature = block.Signature
+		if block.Thinking != "" {
+			return s.delta(Delta{Type: "thinking_delta", Thinking: block.Thinking})
+		}
+		return nil
 	case "tool_use":
 		s.itemID = block.ID
-		item := map[string]any{"type": "function_call", "id": block.ID, "call_id": block.ID, "name": block.Name, "status": "in_progress"}
+		item := map[string]any{"type": "function_call", "id": block.ID, "call_id": block.ID, "name": block.Name, "status": "in_progress", "arguments": ""}
 		if s.customTools[block.Name] {
 			item["type"] = "custom_tool_call"
 			item["input"] = ""
+			delete(item, "arguments")
 		}
 		return s.send("response.output_item.added", map[string]any{
 			"output_index": s.outputIdx,
@@ -259,7 +309,7 @@ func (s *responsesStreamWriter) delta(d Delta) error {
 	switch d.Type {
 	case "text_delta":
 		s.text.WriteString(d.Text)
-		return s.send("response.output_text.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "content_index": 0, "delta": d.Text})
+		return s.send("response.output_text.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "content_index": 0, "delta": d.Text, "logprobs": []any{}})
 	case "thinking_delta":
 		s.thinking.WriteString(d.Thinking)
 		return s.send("response.reasoning_summary_text.delta", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "summary_index": 0, "delta": d.Thinking})
@@ -286,10 +336,30 @@ func (s *responsesStreamWriter) closeBlock() error {
 	switch block.Type {
 	case "text":
 		item = ResponsesOutput{Type: "message", ID: s.itemID, Status: "completed", Role: "assistant",
-			Content: []OutputContent{{Type: "output_text", Text: s.text.String()}}}
+			Content: []OutputContent{{Type: "output_text", Text: s.text.String(), Annotations: []any{}}}}
+		if err := s.send("response.output_text.done", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "content_index": 0, "text": s.text.String(), "logprobs": []any{},
+		}); err != nil {
+			return err
+		}
+		if err := s.send("response.content_part.done", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "content_index": 0, "part": item.Content[0],
+		}); err != nil {
+			return err
+		}
 	case "thinking":
 		item = ResponsesOutput{Type: "reasoning", ID: s.itemID, Status: "completed", EncryptedContent: s.signature,
 			Summary: []SummaryItem{{Type: "summary_text", Text: s.thinking.String()}}}
+		if err := s.send("response.reasoning_summary_text.done", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "summary_index": 0, "text": s.thinking.String(),
+		}); err != nil {
+			return err
+		}
+		if err := s.send("response.reasoning_summary_part.done", map[string]any{
+			"item_id": s.itemID, "output_index": s.outputIdx, "summary_index": 0, "part": item.Summary[0],
+		}); err != nil {
+			return err
+		}
 	case "tool_use":
 		if s.args.Len() > 0 {
 			block.Input = json.RawMessage(s.args.String())
@@ -313,6 +383,19 @@ func (s *responsesStreamWriter) closeBlock() error {
 				return fmt.Errorf("custom tool %q changed its input while streaming", block.Name)
 			}
 			if err := s.send("response.custom_tool_call_input.done", map[string]any{"item_id": s.itemID, "output_index": s.outputIdx, "input": *item.Input}); err != nil {
+				return err
+			}
+		} else {
+			if s.args.Len() == 0 && item.Arguments != "" {
+				if err := s.send("response.function_call_arguments.delta", map[string]any{
+					"item_id": s.itemID, "output_index": s.outputIdx, "delta": item.Arguments,
+				}); err != nil {
+					return err
+				}
+			}
+			if err := s.send("response.function_call_arguments.done", map[string]any{
+				"item_id": s.itemID, "output_index": s.outputIdx, "arguments": item.Arguments,
+			}); err != nil {
 				return err
 			}
 		}

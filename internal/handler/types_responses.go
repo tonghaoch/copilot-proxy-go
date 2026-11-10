@@ -77,8 +77,9 @@ type ResponsesOutput struct {
 }
 
 type OutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Annotations []any  `json:"annotations"`
 }
 
 type ResponsesUsage struct {

@@ -157,6 +157,7 @@ func TestResponsesStreamWriterEmitsCompletedWithToolCall(t *testing.T) {
 		"response.output_item.added",
 		"response.function_call_arguments.delta",
 		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
 		"response.output_item.done",
 		"response.completed",
 	}
@@ -429,5 +430,100 @@ func TestAddCacheBreakpoints(t *testing.T) {
 	}
 	if tools[0].(map[string]any)["cache_control"] != nil || blocks[0].(map[string]any)["cache_control"] != nil {
 		t.Fatal("only the last tool and last block should be marked")
+	}
+}
+
+func TestResponsesStreamInitializesSDKOutputItems(t *testing.T) {
+	items := map[int]map[string]any{}
+	ids := map[string]bool{}
+	emit := func(eventType string, data any) error {
+		wire, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		var event map[string]any
+		if err := json.Unmarshal(wire, &event); err != nil {
+			return err
+		}
+		index, _ := event["output_index"].(float64)
+		item := items[int(index)]
+		switch eventType {
+		case "response.output_item.added":
+			item = event["item"].(map[string]any)
+			id := item["id"].(string)
+			if ids[id] {
+				t.Fatalf("duplicate output item ID %q", id)
+			}
+			ids[id] = true
+			items[int(index)] = item
+			if item["type"] == "function_call" && item["arguments"] != "" {
+				t.Fatalf("function arguments not initialized: %v", item)
+			}
+		case "response.content_part.added":
+			parts := item["content"].([]any)
+			item["content"] = append(parts, event["part"])
+		case "response.output_text.delta":
+			parts := item["content"].([]any)
+			if len(parts) != 1 || event["logprobs"] == nil {
+				t.Fatalf("text delta arrived before initialized content or logprobs: item=%v event=%v", item, event)
+			}
+			part := parts[0].(map[string]any)
+			part["text"] = part["text"].(string) + event["delta"].(string)
+		case "response.function_call_arguments.delta":
+			args, ok := item["arguments"].(string)
+			if !ok {
+				t.Fatalf("function delta arrived before arguments: %v", item)
+			}
+			item["arguments"] = args + event["delta"].(string)
+		}
+		return nil
+	}
+	stream := newResponsesStreamWriter(emit, "claude-test", nil)
+	events := []struct{ typ, data string }{
+		{"message_start", `{"message":{"id":"m","usage":{"input_tokens":1}}}`},
+		{"content_block_start", `{"index":0,"content_block":{"type":"text"}}`},
+		{"content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"hello"}}`},
+		{"content_block_stop", `{"index":0}`},
+		{"content_block_start", `{"index":1,"content_block":{"type":"thinking"}}`},
+		{"content_block_delta", `{"index":1,"delta":{"type":"thinking_delta","thinking":"one"}}`},
+		{"content_block_stop", `{"index":1}`},
+		{"content_block_start", `{"index":2,"content_block":{"type":"text"}}`},
+		{"content_block_delta", `{"index":2,"delta":{"type":"text_delta","text":"again"}}`},
+		{"content_block_stop", `{"index":2}`},
+		{"content_block_start", `{"index":3,"content_block":{"type":"thinking"}}`},
+		{"content_block_delta", `{"index":3,"delta":{"type":"thinking_delta","thinking":"two"}}`},
+		{"content_block_stop", `{"index":3}`},
+		{"content_block_start", `{"index":4,"content_block":{"type":"tool_use","id":"t","name":"shell"}}`},
+		{"content_block_delta", `{"index":4,"delta":{"type":"input_json_delta","partial_json":"{\"x\":1}"}}`},
+		{"content_block_stop", `{"index":4}`},
+		{"message_stop", `{}`},
+	}
+	for _, event := range events {
+		if err := stream.Handle(event.typ, event.data); err != nil {
+			t.Fatalf("%s: %v", event.typ, err)
+		}
+	}
+	if got := items[0]["content"].([]any)[0].(map[string]any)["text"]; got != "hello" {
+		t.Fatalf("accumulated text = %v", got)
+	}
+	if got := items[4]["arguments"]; got != `{"x":1}` {
+		t.Fatalf("accumulated arguments = %v", got)
+	}
+}
+
+func TestAnthropicToResponsesResultUsesDistinctItemIDs(t *testing.T) {
+	result, err := anthropicToResponsesResult(&AnthropicResponse{ID: "m", Content: []ContentBlock{
+		{Type: "text", Text: "one"}, {Type: "thinking", Thinking: "a"},
+		{Type: "text", Text: "two"}, {Type: "thinking", Thinking: "b"},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, item := range result.Output {
+		if item.ID == "" || seen[item.ID] {
+			t.Fatalf("missing or duplicate output item ID: %+v", result.Output)
+		}
+		seen[item.ID] = true
 	}
 }
