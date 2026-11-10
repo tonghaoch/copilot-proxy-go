@@ -89,3 +89,13 @@ func TestChatStreamTerminatesIfFinalUsageNeverArrives(t *testing.T) {
 		t.Fatalf("unexpected terminal stream: %s; record=%+v", recorder.Body.String(), rec)
 	}
 }
+
+func TestChatStreamReportsUnexpectedEOF(t *testing.T) {
+	raw := "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+	recorder := httptest.NewRecorder()
+	rec := &state.RequestRecord{}
+	New(Dependencies{}).streamChatToAnthropic(recorder, &http.Response{Body: io.NopCloser(strings.NewReader(raw))}, "m", rec)
+	if body := recorder.Body.String(); !strings.Contains(body, "event: error") || !strings.Contains(body, "event: message_stop") || !strings.Contains(rec.Error, "finish_reason") {
+		t.Fatalf("unexpected EOF was not reported and terminated: body=%s record=%+v", body, rec)
+	}
+}

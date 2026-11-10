@@ -34,7 +34,7 @@ func (c *streamingMessagesCopilot) ProxyChatCompletionEx(context.Context, []byte
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: c.body}, nil
 }
 
-func streamingResponsesHandler(upstream *streamingMessagesCopilot, endpoint string) *Handler {
+func streamingResponsesHandler(upstream CopilotClient, endpoint string) *Handler {
 	models := &state.State{}
 	models.SetModels([]state.Model{{ID: "claude-test", SupportedEndpoints: []string{endpoint}}})
 	return New(Dependencies{State: models, Metrics: responsesTestMetrics{}, Copilot: upstream, Config: responsesTestConfig{}})
@@ -174,23 +174,74 @@ func TestResponsesViaMessagesPreservesUpstreamStreamingErrors(t *testing.T) {
 
 func TestResponsesViaMessagesReportsTruncatedStreams(t *testing.T) {
 	tests := []struct {
-		name, body string
-		status     int
-		want       string
+		name, endpoint, body string
+		status               int
+		want                 string
 	}{
-		{"empty", "", http.StatusBadGateway, "upstream stream ended without a terminal event"},
-		{"partial", "event: message_start\ndata: {\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":1}}}\n\n", http.StatusOK, `"code":"stream_error"`},
+		{"empty", "/v1/messages", "", http.StatusBadGateway, "upstream stream ended without a terminal event"},
+		{"partial", "/v1/messages", "event: message_start\ndata: {\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":1}}}\n\n", http.StatusOK, `"code":"stream_error"`},
+		{"chat partial", "/chat/completions", "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", http.StatusOK, `"code":"api_error"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			upstream := &streamingMessagesCopilot{body: io.NopCloser(strings.NewReader(tt.body))}
 			recorder := httptest.NewRecorder()
-			streamingResponsesHandler(upstream, "/v1/messages").Responses(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(
+			streamingResponsesHandler(upstream, tt.endpoint).Responses(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(
 				`{"model":"claude-test","input":"hello","stream":true}`,
 			)))
 			if recorder.Code != tt.status || !strings.Contains(recorder.Body.String(), tt.want) || strings.Contains(recorder.Body.String(), "response.completed") {
 				t.Fatalf("truncated stream = %d %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+type cancelAwareMessagesCopilot struct {
+	capturingResponsesCopilot
+	body     io.ReadCloser
+	canceled chan struct{}
+}
+
+func (c *cancelAwareMessagesCopilot) ProxyMessages(ctx context.Context, _ []byte, _ string, _, _ bool) (*http.Response, error) {
+	go func() {
+		<-ctx.Done()
+		c.body.Close()
+		close(c.canceled)
+	}()
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: c.body}, nil
+}
+
+func TestResponsesViaMessagesCancelsUpstreamOnTranslationError(t *testing.T) {
+	reader, writer := io.Pipe()
+	upstream := &cancelAwareMessagesCopilot{body: reader, canceled: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer writer.Close()
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		streamingResponsesHandler(upstream, "/v1/messages").Responses(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(
+			`{"model":"claude-test","input":"hello","stream":true}`,
+		)).WithContext(ctx))
+		close(done)
+	}()
+	go func() {
+		io.WriteString(writer, strings.Join([]string{
+			`event: message_start`, `data: {"message":{"id":"m","usage":{"input_tokens":1}}}`, "",
+			`event: content_block_delta`, `data: {not-json}`, "",
+		}, "\n")+"\n")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("translation error did not interrupt the open upstream stream")
+	}
+	select {
+	case <-upstream.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request context was not canceled")
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "event: error") || strings.Contains(body, "response.completed") {
+		t.Fatalf("translation failure was not reported: %s", body)
 	}
 }

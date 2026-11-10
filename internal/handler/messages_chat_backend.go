@@ -114,6 +114,9 @@ func (h *Handler) streamChatToAnthropic(w http.ResponseWriter, resp *http.Respon
 		slog.Warn("chat stream ended without final usage after finish_reason")
 		streamErr = nil
 	}
+	if streamErr == nil && !streamState.IsComplete() {
+		streamErr = errors.New("chat stream ended before finish_reason")
+	}
 	if streamErr != nil {
 		rec.Error = streamErr.Error()
 		slog.Error("streaming error", "error", streamErr)

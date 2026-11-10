@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -64,6 +65,8 @@ func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Requ
 	}
 	reader, writer := io.Pipe()
 	capture.stream = writer
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	var flusher http.Flusher
 	emit := func(eventType string, data any) error {
 		if flusher == nil {
@@ -80,9 +83,12 @@ func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Requ
 	go func() {
 		err := readSSE(reader, stream.Handle)
 		reader.CloseWithError(err)
+		if err != nil {
+			cancel()
+		}
 		done <- err
 	}()
-	h.dispatchMessages(capture, r, req, model, false, body, rec)
+	h.dispatchMessages(capture, r.WithContext(ctx), req, model, false, body, rec)
 	writer.Close()
 	err := <-done
 	if capture.status >= 400 {
