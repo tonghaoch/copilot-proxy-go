@@ -19,6 +19,9 @@ func Responses(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "responses", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	w = tracked.Writer
 	rec := tracked.Record
 	rec.Backend = "responses"
@@ -39,15 +42,26 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	rec.RoutedModel = modelID
 
 	model := h.state.FindModel(modelID)
-	if model == nil || !isResponsesSupported(model) {
+	if model == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]string{
-				"message": "This model does not support the responses endpoint",
+				"message": "unknown model",
 				"type":    "invalid_request_error",
 			},
 		})
+		return
+	}
+	backend := "responses"
+	if !isResponsesSupported(model) {
+		backend = messagesBackend(model)
+	}
+	if !h.admitBudget(w, tracked, model, backend) {
+		return
+	}
+	if !isResponsesSupported(model) {
+		h.responsesViaMessages(w, r, payload, modelID, model, rec)
 		return
 	}
 
@@ -77,8 +91,10 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		api.ForwardError(w, err)
 		return
 	}
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}

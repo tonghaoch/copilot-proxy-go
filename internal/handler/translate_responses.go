@@ -471,12 +471,7 @@ func translateResponsesResultToAnthropic(result *ResponsesResult) *AnthropicResp
 	// Usage
 	usage := AnthropicUsage{}
 	if result.Usage != nil {
-		usage.InputTokens = result.Usage.InputTokens
-		usage.OutputTokens = result.Usage.OutputTokens
-		if result.Usage.InputTokensDetails != nil {
-			usage.CacheReadInputTokens = result.Usage.InputTokensDetails.CachedTokens
-			usage.InputTokens -= usage.CacheReadInputTokens
-		}
+		usage = result.Usage.toAnthropic()
 	}
 
 	return &AnthropicResponse{

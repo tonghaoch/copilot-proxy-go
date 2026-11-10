@@ -24,8 +24,10 @@ func (h *Handler) handleWithResponsesAPI(w http.ResponseWriter, r *http.Request,
 	vision := hasVision(req.Messages)
 	slog.Info("responses API backend", "model", payload.Model, "stream", payload.Stream,
 		"initiator", initiatorStr(isAgent), "vision", vision)
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyResponses(r.Context(), body, isAgent, vision)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}
@@ -43,13 +45,7 @@ func (h *Handler) nonStreamResponsesToAnthropic(w http.ResponseWriter, resp *htt
 		api.ForwardError(w, err)
 		return
 	}
-	if result.Usage != nil {
-		rec.InputTokens = int64(result.Usage.InputTokens)
-		rec.OutputTokens = int64(result.Usage.OutputTokens)
-		if result.Usage.InputTokensDetails != nil {
-			rec.CachedTokens = int64(result.Usage.InputTokensDetails.CachedTokens)
-		}
-	}
+	captureResponsesUsage(rec, result.Usage)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.anthropic.FromResponses(&result))
 }
@@ -62,6 +58,7 @@ func (h *Handler) streamResponsesToAnthropic(w http.ResponseWriter, resp *http.R
 	}
 	streamState := NewResponsesStreamState(model)
 	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
+		captureResponsesStreamUsage(eventType, data, rec)
 		events, err := streamState.TranslateEvent(eventType, data)
 		if err != nil {
 			return err

@@ -70,24 +70,61 @@ type ResponsesOutput struct {
 	Content          []OutputContent `json:"content,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
+	Namespace        string          `json:"namespace,omitempty"`
 	Arguments        string          `json:"arguments,omitempty"`
+	Input            *string         `json:"input,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
 	Summary          []SummaryItem   `json:"summary,omitempty"`
 }
 
 type OutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Annotations []any  `json:"annotations"`
 }
 
 type ResponsesUsage struct {
 	InputTokens        int                 `json:"input_tokens"`
 	OutputTokens       int                 `json:"output_tokens"`
+	TotalTokens        int                 `json:"total_tokens"`
 	InputTokensDetails *InputTokensDetails `json:"input_tokens_details,omitempty"`
+	inputKnown         bool
+	outputKnown        bool
+}
+
+func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
+	type wire ResponsesUsage
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var fields struct {
+		InputTokens  *int `json:"input_tokens"`
+		OutputTokens *int `json:"output_tokens"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*u = ResponsesUsage(value)
+	u.inputKnown, u.outputKnown = fields.InputTokens != nil, fields.OutputTokens != nil
+	return nil
 }
 
 type InputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens     int  `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+}
+
+func (u *ResponsesUsage) toAnthropic() AnthropicUsage {
+	result := AnthropicUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+	if u.InputTokensDetails != nil {
+		result.CacheReadInputTokens = u.InputTokensDetails.CachedTokens
+		if u.InputTokensDetails.CacheWriteTokens != nil {
+			result.CacheCreationInputTokens = *u.InputTokensDetails.CacheWriteTokens
+		}
+		result.InputTokens -= result.CacheReadInputTokens + result.CacheCreationInputTokens
+	}
+	return result
 }
 
 type IncompleteDetail struct {

@@ -7,24 +7,35 @@ import (
 
 // RequestRecord holds per-request metrics.
 type RequestRecord struct {
-	Timestamp      time.Time `json:"timestamp"`
-	Endpoint       string    `json:"endpoint"`     // messages, chat_completions, responses, embeddings
-	Model          string    `json:"model"`        // original model requested
-	RoutedModel    string    `json:"routed_model"` // after small-model routing
-	Backend        string    `json:"backend"`      // messages, responses, chat_completions
-	RequestType    string    `json:"request_type"` // normal, compact, warmup
-	Initiator      string    `json:"initiator"`    // user, agent
-	HasVision      bool      `json:"has_vision"`
-	Streaming      bool      `json:"streaming"`
-	ToolCount      int       `json:"tool_count"`
-	ThinkingBudget int       `json:"thinking_budget"`
-	InputTokens    int64     `json:"input_tokens"`
-	OutputTokens   int64     `json:"output_tokens"`
-	CachedTokens   int64     `json:"cached_tokens"`
-	StopReason     string    `json:"stop_reason"`
-	LatencyMs      int64     `json:"latency_ms"`
-	StatusCode     int       `json:"status_code"`
-	Error          string    `json:"error,omitempty"`
+	Timestamp           time.Time `json:"timestamp"`
+	Endpoint            string    `json:"endpoint"`     // messages, chat_completions, responses, embeddings
+	Model               string    `json:"model"`        // original model requested
+	RoutedModel         string    `json:"routed_model"` // after small-model routing
+	Backend             string    `json:"backend"`      // messages, responses, chat_completions
+	RequestType         string    `json:"request_type"` // normal, compact, warmup
+	Initiator           string    `json:"initiator"`    // user, agent
+	HasVision           bool      `json:"has_vision"`
+	Streaming           bool      `json:"streaming"`
+	ToolCount           int       `json:"tool_count"`
+	ThinkingBudget      int       `json:"thinking_budget"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CachedTokens        int64     `json:"cached_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	StopReason          string    `json:"stop_reason"`
+	LatencyMs           int64     `json:"latency_ms"`
+	StatusCode          int       `json:"status_code"`
+	Error               string    `json:"error,omitempty"`
+
+	UpstreamAttempted      bool  `json:"-"`
+	UpstreamRejected       bool  `json:"-"`
+	UncertainRetries       int64 `json:"-"`
+	InputUsageKnown        bool  `json:"-"`
+	OutputUsageKnown       bool  `json:"-"`
+	CacheWrite5mTokens     int64 `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens     int64 `json:"cache_write_1h_tokens,omitempty"`
+	CacheWriteDetailsKnown bool  `json:"cache_write_details_known,omitempty"`
+	CacheWriteUsageKnown   bool  `json:"-"`
 }
 
 // ClaudeMDFile represents an extracted CLAUDE.md file from the system prompt.
@@ -56,14 +67,17 @@ type SubagentInfoSnapshot struct {
 
 // Aggregates holds incrementally maintained statistics.
 type Aggregates struct {
-	TotalRequests     int64            `json:"total_requests"`
-	TotalInputTokens  int64            `json:"total_input_tokens"`
-	TotalOutputTokens int64            `json:"total_output_tokens"`
-	TotalCachedTokens int64            `json:"total_cached_tokens"`
-	ModelCounts       map[string]int64 `json:"model_counts"`
-	BackendCounts     map[string]int64 `json:"backend_counts"`
-	TypeCounts        map[string]int64 `json:"type_counts"`
-	StartTime         time.Time        `json:"start_time"`
+	TotalRequests            int64            `json:"total_requests"`
+	TotalInputTokens         int64            `json:"total_input_tokens"`
+	TotalOutputTokens        int64            `json:"total_output_tokens"`
+	TotalCachedTokens        int64            `json:"total_cached_tokens"`
+	TotalCacheCreationTokens int64            `json:"total_cache_creation_tokens"`
+	TotalCacheWrite5mTokens  int64            `json:"total_cache_write_5m_tokens"`
+	TotalCacheWrite1hTokens  int64            `json:"total_cache_write_1h_tokens"`
+	ModelCounts              map[string]int64 `json:"model_counts"`
+	BackendCounts            map[string]int64 `json:"backend_counts"`
+	TypeCounts               map[string]int64 `json:"type_counts"`
+	StartTime                time.Time        `json:"start_time"`
 }
 
 // MetricsSnapshot is the read-consistent copy returned by Snapshot().
@@ -113,6 +127,11 @@ func (m *metricsStore) RecordRequest(rec RequestRecord) {
 	m.agg.TotalInputTokens += rec.InputTokens
 	m.agg.TotalOutputTokens += rec.OutputTokens
 	m.agg.TotalCachedTokens += rec.CachedTokens
+	m.agg.TotalCacheCreationTokens += rec.CacheCreationTokens
+	if rec.CacheWriteDetailsKnown {
+		m.agg.TotalCacheWrite5mTokens += rec.CacheWrite5mTokens
+		m.agg.TotalCacheWrite1hTokens += rec.CacheWrite1hTokens
+	}
 
 	model := rec.RoutedModel
 	if model == "" {

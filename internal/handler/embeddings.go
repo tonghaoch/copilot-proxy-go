@@ -18,6 +18,9 @@ func Embeddings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	tracked := trackRequest(w, r, "embeddings", h.metrics)
 	defer tracked.Finish()
+	if h.budget != nil {
+		r = tracked.trackRetries(r)
+	}
 	w = tracked.Writer
 	rec := tracked.Record
 	rec.Backend = "embeddings"
@@ -49,8 +52,13 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("embeddings request")
 
+	if !h.admitBudget(w, tracked, h.state.FindModel(model), "embeddings") {
+		return
+	}
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyEmbeddings(r.Context(), body)
 	if err != nil {
+		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return
 	}
@@ -64,6 +72,13 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.InputTokens = inputTokens
+	var usage struct {
+		PromptTokens *int64 `json:"prompt_tokens"`
+	}
+	if json.Unmarshal(result["usage"], &usage) == nil && usage.PromptTokens != nil {
+		rec.InputUsageKnown = true
+	}
+	rec.OutputUsageKnown = true
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)

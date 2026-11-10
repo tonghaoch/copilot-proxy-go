@@ -101,6 +101,7 @@ Only `start` supports `--proxy-env`; without it, upstream requests ignore proxy 
 ## Dashboard
 
 Open `http://127.0.0.1:4141/dashboard` while the proxy is running. Local request metrics are kept in memory and reset on restart; Copilot quota is fetched from upstream.
+Total input includes uncached input, cache reads, and cache writes. The cache-write TTL breakdown includes only writes whose TTL was reported by the provider.
 
 <img src="demo/copilot-proxy-dashboard.png" alt="Dashboard" width="500" />
 
@@ -110,7 +111,7 @@ Open `http://127.0.0.1:4141/dashboard` while the proxy is running. Local request
 ./copilot-proxy-go start --claude-code
 ```
 
-This interactively selects primary and small/fast models, saves the small model to the proxy configuration, and generates a command to run in another terminal. Use the model picker or `/models` to find models available to your account. Claude model versions are exposed in Claude Code's dashed form; models reporting a context window of at least 1,000,000 tokens also get a `[1m]` hint. This hint reflects the reported capability, not a context-window upgrade.
+This interactively selects primary, small/fast, Opus, and Fable models, saves the small model to the proxy configuration, and generates a command to run in another terminal. Use the model picker or `/models` to find models available to your account. Claude model versions are exposed in Claude Code's dashed form; models reporting a context window of at least 1,000,000 tokens also get a `[1m]` hint. This hint reflects the reported capability, not a context-window upgrade.
 
 Or set the variables manually (Bash/Zsh):
 
@@ -128,13 +129,15 @@ export no_proxy="$NO_PROXY"
 claude
 ```
 
+If Copilot rejects Claude Code's server-side `safeguards` field, the proxy retries that Claude Code request without the rejected field and its paired beta header. It does not fabricate safety verdicts: Claude Code falls back to its own classifier requests, which can incur token usage. Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` when launching Claude Code to use that fallback without first attempting server-side checks. With Claude Code 2.1.302 or later, set `CLAUDE_CODE_AUTO_MODE_MODEL` to an available model ID, such as a Haiku model, to choose the client-side approval classifier separately from the main conversation. A smaller classifier can make different safety decisions; server-side classifiers ignore this setting.
+
 ## Usage with Codex CLI
 
 ```bash
 ./copilot-proxy-go start --codex
 ```
 
-This interactively selects a Responses-capable model and generates a Codex command, including the model's context window when reported by Copilot. Or set it manually (Bash/Zsh; replace the example model with one available to your account that supports `/responses`):
+This interactively selects a chat model and generates a Codex command, including the selected context window when reported by Copilot. Models without a native Responses endpoint are translated through the Messages or Chat Completions backend. Or set it manually (Bash/Zsh; replace the example model with one available to your account):
 
 ```bash
 export CODEX_API_KEY=copilot-proxy
@@ -159,6 +162,8 @@ Configuration is stored in `config.json` in the application data directory, alon
 
 Use `./copilot-proxy-go debug` to see the resolved paths. `smallModel` chooses the compact/warmup routing target; `compactUseSmallModel` enables compact routing and does not affect warmup routing.
 
+For native Messages requests, breakpoints default to one hour when no breakpoint in the request specifies a TTL. Set `cacheTTL` to `"5m"` for five minutes or `""` to leave client breakpoints unchanged; requests containing explicit TTLs are passed through unchanged to preserve their ordering. To override every native Messages breakpoint, including an explicit client TTL, start with `--force-cache-ttl 1h` (or `5m`). Responses requests translated to Messages receive cache breakpoints automatically. Cache eligibility and hits depend on the upstream model, minimum prompt length, and an unchanged prefix; one-hour cache writes may cost more than five-minute writes.
+
 API-key authentication is disabled when `auth.apiKeys` is empty. To enable it, set `auth.apiKeys` to a list of non-empty keys in `config.json`, then restart the proxy. Clients must send a configured key via `x-api-key` or `Authorization: Bearer <key>`. Replace the `copilot-proxy` placeholder in the manual client examples (and in the generated Claude Code command) with your key; Codex setup automatically uses the first configured key.
 
 Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS via a reverse proxy for access over untrusted networks. Authentication covers the dashboard and utility endpoints too; only `GET /` and `OPTIONS` requests bypass it. Without configured keys, `/token` is additionally restricted to loopback clients.
@@ -169,7 +174,7 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 |----------|--------|-------------|
 | `/` | GET | Health check |
 | `/v1/messages` | POST | Anthropic Messages API |
-| `/v1/messages/count_tokens` | POST | Approximate input-token estimation (not model-tokenizer counts) |
+| `/v1/messages/count_tokens` | POST | Upstream token count, with an approximate fallback |
 | `/chat/completions`, `/v1/chat/completions` | POST | OpenAI Chat Completions |
 | `/responses`, `/v1/responses` | POST | OpenAI Responses API |
 | `/embeddings`, `/v1/embeddings` | POST | Embeddings |
@@ -178,6 +183,18 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 | `/usage` | GET | Copilot quota and usage |
 | `/api/stats` | GET | In-memory request metrics and latest session snapshot |
 | `/dashboard` | GET | Usage dashboard (web UI) |
+
+### Token-spend budget
+
+```bash
+./copilot-proxy-go start --budget-usd 200
+```
+
+The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. If usage is incomplete, or an earlier retry may have reached inference without reporting usage, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` and the dashboard distinguish the reported-usage estimate from the reserve for uncertain usage; both count toward the limit. A restored amount is treated as reported usage unless its reserved portion is supplied separately.
+
+This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, and charges outside this process are not included, and retry reserves may exceed actual charges. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; incomplete usage with no reliable bound (including an unknown embeddings batch) pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+
+Restarting normally resets the estimate. To carry it forward, note `estimated_spent_usd` and `reserved_usd` from `/api/stats` after in-flight requests finish (or from the final budget log after a graceful shutdown), then start with, for example, `--budget-usd 200 --budget-spent-usd 42.50 --budget-reserved-usd 10`. The reserve is part of the restored total, not added to it. Include a conservative reserve for any prior requests whose cost was unknown. The restored values are estimates, not persistent billing reconciliation.
 
 ## CLI Reference
 
@@ -190,6 +207,10 @@ Flags:
   -a, --account-type string   individual, business, or enterprise (default "individual")
   -c, --claude-code           interactive model selection for Claude Code
       --codex                 interactive model selection for Codex CLI
+      --budget-usd float      estimated per-process token-spend ceiling in USD
+      --budget-spent-usd float  restore prior estimated spend (requires --budget-usd)
+      --budget-reserved-usd float  reserved portion of restored spend (requires --budget-spent-usd)
+      --force-cache-ttl string  override native Messages cache breakpoints: 5m or 1h
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)

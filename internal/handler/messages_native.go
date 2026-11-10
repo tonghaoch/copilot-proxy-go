@@ -14,6 +14,8 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
+var errNativeMessageStop = errors.New("native stream terminal event")
+
 // handleWithMessagesAPI forwards an Anthropic request to Copilot's native
 // Messages API, applying necessary filtering and header adjustments.
 // rawBody is the original request bytes to preserve unknown fields.
@@ -30,19 +32,27 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		payload["model"] = req.Model
 	}
 
-	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
-	stripCacheControlScope(payload)
-
 	// Strip tools Copilot rejects (e.g. image_generation)
 	stripUnsupportedToolsInMap(payload)
 
 	// Filter thinking blocks in assistant messages
 	filterThinkingBlocksInMap(payload)
 
+	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
+	stripCacheControlScope(payload)
+	if h.forceCacheTTL != "" {
+		forceCacheTTL(payload, h.forceCacheTTL)
+	} else {
+		applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
+	}
+
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
 	// Copilot rejects it.
 	requestedEffort := applyAdaptiveThinkingInMap(payload, req, h.state, h.config)
+	if v := thinkingRewriteHeader(req, payload); v != "" {
+		w.Header().Set("X-Copilot-Proxy-Thinking", v)
+	}
 
 	// Marshal the modified payload
 	body, err := json.Marshal(payload)
@@ -68,17 +78,32 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 
 	slog.Info("messages API (native)", "model", req.Model, "stream", req.Stream, "vision", vision)
 
+	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
+	if err != nil && strings.HasPrefix(strings.ToLower(r.UserAgent()), "claude-cli/") && rejectsSafeguards(err, payload) {
+		delete(payload, "safeguards")
+		betaHeader = removeBetaHeader(betaHeader, "dangerous-tool-use-2026-09-03")
+		body, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			api.ForwardError(w, marshalErr)
+			return
+		}
+		slog.Warn("Copilot rejected server-side safeguards; Claude Code must use its own classifier")
+		w.Header().Set("X-Copilot-Proxy-Safeguards", "client-classifier")
+		resp, err = h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
+	}
 	if err != nil {
 		// If Copilot rejected our effort, cache the supported list, rewrite
 		// the payload, and retry exactly once. Anything else propagates.
 		if retried, retryResp, retryErr := maybeRetryWithFallbackEffort(r.Context(), h.copilot, err, payload, req, requestedEffort, betaHeader, vision, isAgent); retried {
 			if retryErr != nil {
+				markUpstreamFailure(rec, retryErr)
 				api.ForwardError(w, retryErr)
 				return
 			}
 			resp = retryResp
 		} else {
+			markUpstreamFailure(rec, err)
 			api.ForwardError(w, err)
 			return
 		}
@@ -106,8 +131,11 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 				return err
 			}
 			flusher.Flush()
+			if eventType == "message_stop" || eventType == "error" {
+				return errNativeMessageStop
+			}
 			return nil
-		}); err != nil {
+		}); err != nil && !errors.Is(err, errNativeMessageStop) {
 			rec.Error = err.Error()
 			slog.Error("native messages streaming error", "error", err)
 		}
@@ -121,12 +149,78 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 		io.Copy(w, tee)
 
 		// Parse usage from the buffered copy
-		var anthResp AnthropicResponse
-		if json.Unmarshal(buf.Bytes(), &anthResp) == nil {
-			rec.InputTokens = int64(anthResp.Usage.InputTokens)
-			rec.OutputTokens = int64(anthResp.Usage.OutputTokens)
-			rec.CachedTokens = int64(anthResp.Usage.CacheReadInputTokens)
+		var anthResp struct {
+			Usage *nativeTokenUsage `json:"usage"`
 		}
+		if json.Unmarshal(buf.Bytes(), &anthResp) == nil {
+			captureNativeUsage(rec, anthResp.Usage, true)
+		}
+	}
+}
+
+func rejectsSafeguards(err error, payload map[string]any) bool {
+	if _, ok := payload["safeguards"]; !ok {
+		return false
+	}
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(httpErr.Body)
+	return strings.Contains(body, "safeguards") && strings.Contains(body, "extra inputs are not permitted")
+}
+
+func removeBetaHeader(header, removed string) string {
+	var kept []string
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" && part != removed {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, ",")
+}
+
+type nativeTokenUsage struct {
+	InputTokens              *int `json:"input_tokens"`
+	OutputTokens             *int `json:"output_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5m *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+func captureNativeUsage(rec *state.RequestRecord, usage *nativeTokenUsage, final bool) {
+	if usage == nil {
+		return
+	}
+	if usage.InputTokens != nil {
+		rec.InputTokens = int64(*usage.InputTokens)
+		rec.InputUsageKnown = true
+	}
+	if usage.OutputTokens != nil {
+		rec.OutputTokens = int64(*usage.OutputTokens)
+		if final {
+			rec.OutputUsageKnown = true
+		}
+	} else if final {
+		rec.OutputUsageKnown = false
+	}
+	if usage.CacheReadInputTokens != nil {
+		rec.CachedTokens = int64(*usage.CacheReadInputTokens)
+	}
+	if usage.CacheCreationInputTokens != nil {
+		if rec.CacheCreationTokens != int64(*usage.CacheCreationInputTokens) {
+			rec.CacheWriteDetailsKnown = false
+		}
+		rec.CacheCreationTokens = int64(*usage.CacheCreationInputTokens)
+	}
+	if usage.CacheCreation != nil && usage.CacheCreation.Ephemeral5m != nil && usage.CacheCreation.Ephemeral1h != nil {
+		rec.CacheWrite5mTokens = int64(*usage.CacheCreation.Ephemeral5m)
+		rec.CacheWrite1hTokens = int64(*usage.CacheCreation.Ephemeral1h)
+		rec.CacheWriteDetailsKnown = true
 	}
 }
 
@@ -135,16 +229,23 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 func captureNativeTokens(eventType, data string, rec *state.RequestRecord) {
 	switch eventType {
 	case "message_start":
-		var evt MessageStartEvent
+		var evt struct {
+			Message struct {
+				Usage *nativeTokenUsage `json:"usage"`
+			} `json:"message"`
+		}
 		if json.Unmarshal([]byte(data), &evt) == nil {
-			rec.InputTokens = int64(evt.Message.Usage.InputTokens)
-			rec.CachedTokens = int64(evt.Message.Usage.CacheReadInputTokens)
+			captureNativeUsage(rec, evt.Message.Usage, false)
 		}
 	case "message_delta":
-		var evt MessageDeltaEvent
-		if json.Unmarshal([]byte(data), &evt) == nil {
-			rec.OutputTokens = int64(evt.Usage.OutputTokens)
+		var evt struct {
+			Usage *nativeTokenUsage `json:"usage"`
 		}
+		if json.Unmarshal([]byte(data), &evt) == nil {
+			captureNativeUsage(rec, evt.Usage, true)
+		}
+	case "content_block_delta":
+		rec.OutputUsageKnown = false
 	}
 }
 
@@ -236,6 +337,21 @@ func applyAdaptiveThinkingInMap(payload map[string]any, req *AnthropicRequest, m
 	}
 	setOutputConfigEffort(payload, effective)
 	return effective
+}
+
+// thinkingRewriteHeader describes a thinking.type=enabled request that was
+// rewritten to adaptive, so the client can tell its budget was not used.
+// Copilot rejects enabled for some models and accepts adaptive. Returns "" when
+// no rewrite happened.
+func thinkingRewriteHeader(req *AnthropicRequest, payload map[string]any) string {
+	if req.Thinking == nil || req.Thinking.Type != "enabled" {
+		return ""
+	}
+	t, ok := payload["thinking"].(map[string]string)
+	if !ok || t["type"] != "adaptive" {
+		return ""
+	}
+	return "enabled-rewritten-to-adaptive"
 }
 
 // clientRequestedEffort reads the effort the caller asked for, or "" if unset.
@@ -341,6 +457,8 @@ func filterBetaHeader(header string) string {
 	drop := map[string]bool{
 		"claude-code-20250219":  true,
 		"context-1m-2025-08-07": true,
+		// Copilot honours cache_control ttl natively and rejects this beta.
+		"extended-cache-ttl-2025-04-11": true,
 	}
 	parts := strings.Split(header, ",")
 	var filtered []string

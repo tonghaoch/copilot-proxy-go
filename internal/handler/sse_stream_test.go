@@ -137,3 +137,43 @@ func TestChatStreamFinishWithoutAnyChunks(t *testing.T) {
 		t.Errorf("Finish() = %q, want a complete empty message", got)
 	}
 }
+
+func TestChatStreamKeepsFirstToolLiveWhileDeferringInterleavedBlocks(t *testing.T) {
+	stream := NewAnthropicStreamState("test-model")
+	chunk := func(delta ChatCompletionChunkDelta) []SSEEvent {
+		return stream.TranslateChunk(&ChatCompletionChunk{ID: "m", Choices: []ChatCompletionChunkChoice{{Delta: delta}}})
+	}
+	first := chunk(ChatCompletionChunkDelta{ToolCalls: []ToolCallDelta{{
+		Index: 0, ID: "first", Function: &ToolCallFuncDelta{Name: "one", Arguments: `{"x":`},
+	}}})
+	if got := strings.Join(eventNames(first), ","); got != "message_start,content_block_start,content_block_delta" {
+		t.Fatalf("first tool was not streamed immediately: %s", got)
+	}
+	second := chunk(ChatCompletionChunkDelta{ToolCalls: []ToolCallDelta{{
+		Index: 1, ID: "second", Function: &ToolCallFuncDelta{Name: "two", Arguments: `{"y":`},
+	}}})
+	if len(second) != 0 {
+		t.Fatalf("interleaved tool should be deferred: %+v", second)
+	}
+	continuation := chunk(ChatCompletionChunkDelta{ToolCalls: []ToolCallDelta{{
+		Index: 0, Function: &ToolCallFuncDelta{Arguments: `1}`},
+	}}})
+	if len(continuation) != 1 || continuation[0].Data.(ContentBlockDeltaEvent).Delta.PartialJSON != `1}` {
+		t.Fatalf("first tool continuation was not streamed: %+v", continuation)
+	}
+	text := "after tools"
+	chunk(ChatCompletionChunkDelta{Content: &text})
+	chunk(ChatCompletionChunkDelta{ToolCalls: []ToolCallDelta{{
+		Index: 1, Function: &ToolCallFuncDelta{Arguments: `2}`},
+	}}})
+	events := stream.Finish("tool_use")
+	if got := strings.Join(eventNames(events), ","); got != "content_block_stop,content_block_start,content_block_delta,content_block_stop,content_block_start,content_block_delta,content_block_stop,message_delta,message_stop" {
+		t.Fatalf("unexpected deferred event sequence: %s", got)
+	}
+	if got := events[2].Data.(ContentBlockDeltaEvent).Delta.PartialJSON; got != `{"y":2}` {
+		t.Fatalf("second tool arguments = %q", got)
+	}
+	if got := events[5].Data.(ContentBlockDeltaEvent).Delta.Text; got != text {
+		t.Fatalf("deferred text = %q", got)
+	}
+}

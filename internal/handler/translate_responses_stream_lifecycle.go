@@ -17,11 +17,7 @@ func (s *ResponsesStreamState) handleResponseCreated(data string) ([]SSEEvent, e
 	s.model = event.Response.Model
 	usage := AnthropicUsage{}
 	if event.Response.Usage != nil {
-		usage.InputTokens = event.Response.Usage.InputTokens
-		if event.Response.Usage.InputTokensDetails != nil {
-			usage.CacheReadInputTokens = event.Response.Usage.InputTokensDetails.CachedTokens
-			usage.InputTokens -= usage.CacheReadInputTokens
-		}
+		usage = event.Response.Usage.toAnthropic()
 		s.inputTokens = usage.InputTokens
 		s.cachedTokens = usage.CacheReadInputTokens
 	}
@@ -54,6 +50,9 @@ func (s *ResponsesStreamState) handleResponseCompleted(data string) ([]SSEEvent,
 		// cumulative input/cache counts to clients as well as recording metrics.
 		usage.InputTokens = &translated.Usage.InputTokens
 		usage.CacheReadInputTokens = &translated.Usage.CacheReadInputTokens
+		if result.Usage.InputTokensDetails != nil && result.Usage.InputTokensDetails.CacheWriteTokens != nil {
+			usage.CacheCreationInputTokens = &translated.Usage.CacheCreationInputTokens
+		}
 	}
 	events = append(events,
 		SSEEvent{Event: "message_delta", Data: MessageDeltaEvent{
