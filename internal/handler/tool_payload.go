@@ -94,6 +94,12 @@ func applyCacheTTL(payload map[string]any, ttl string) {
 	}
 }
 
+func forceCacheTTL(payload map[string]any, ttl string) {
+	visitCacheControls(payload, func(cc map[string]any) {
+		cc["ttl"] = ttl
+	})
+}
+
 var unsupportedTools = map[string]bool{
 	"image_generation": true,
 	"web_search":       true,

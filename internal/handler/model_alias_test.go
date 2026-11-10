@@ -101,3 +101,21 @@ func TestResolveCopilotModel(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveAvailableClaudeMajor(t *testing.T) {
+	models := []state.Model{
+		{ID: "claude-sonnet-5.9"},
+		{ID: "claude-sonnet-5.10"},
+		{ID: "claude-sonnet-5.11", Policy: state.ModelPolicy{State: "disabled"}},
+		{ID: "claude-sonnet-5.12-high"},
+		{ID: "claude-opus-5.99"},
+	}
+	if got := resolveAvailableClaudeMajor("claude-sonnet-5", models); got != "claude-sonnet-5.10" {
+		t.Fatalf("major alias = %q", got)
+	}
+	for _, exact := range []string{"claude-sonnet-5.9", "claude-sonnet-5-high", "gpt-5"} {
+		if got := resolveAvailableClaudeMajor(exact, models); got != "" {
+			t.Fatalf("exact model %q unexpectedly resolved to %q", exact, got)
+		}
+	}
+}

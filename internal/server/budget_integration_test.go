@@ -204,6 +204,51 @@ func TestBudgetStopsWhenUpstreamUsageIsMissing(t *testing.T) {
 	}
 }
 
+func TestBudgetContinuesAfterBoundedMissingUsage(t *testing.T) {
+	upstream := &budgetCopilot{missingUsage: true}
+	model := pricedBudgetModel(t, []string{"/v1/messages"})
+	model.Capabilities.Limits = state.ModelLimits{MaxContextWindowTokens: 1000, MaxOutputTokens: 100}
+	models := &state.State{}
+	models.SetModels([]state.Model{model})
+	budget, err := state.NewTokenBudget(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handler.New(handler.Dependencies{State: models, Metrics: &contractMetrics{}, Copilot: upstream, Budget: budget})
+	srv := server.NewWithHandler(server.Options{}, h)
+	body := `{"model":"test-model","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}`
+	if first := serveBudgetRequest(srv, http.MethodPost, "/v1/messages", body); first.Code != http.StatusOK {
+		t.Fatalf("first request: %d %s", first.Code, first.Body.String())
+	}
+	snapshot := budget.Snapshot()
+	if snapshot.Blocked || snapshot.ConservativeEstimates != 1 || snapshot.EstimatedSpentUSD <= 0 {
+		t.Fatalf("bounded missing usage not accounted: %+v", snapshot)
+	}
+	if second := serveBudgetRequest(srv, http.MethodPost, "/v1/messages", body); second.Code != http.StatusOK || upstream.calls != 2 {
+		t.Fatalf("proxy did not continue: %d, upstream calls %d", second.Code, upstream.calls)
+	}
+}
+
+func TestBudgetResolvesAvailableClaudeMajorAlias(t *testing.T) {
+	upstream := &budgetCopilot{}
+	model := pricedBudgetModel(t, []string{"/v1/messages"})
+	model.ID = "claude-sonnet-5.5"
+	models := &state.State{}
+	models.SetModels([]state.Model{model})
+	budget, err := state.NewTokenBudget(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handler.New(handler.Dependencies{State: models, Metrics: &contractMetrics{}, Copilot: upstream, Budget: budget})
+	srv := server.NewWithHandler(server.Options{}, h)
+	body := `{"model":"claude-sonnet-5","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}`
+	response := serveBudgetRequest(srv, http.MethodPost, "/v1/messages", body)
+	if response.Code != http.StatusOK || response.Header().Get("X-Copilot-Proxy-Routed-Model") != model.ID || upstream.calls != 1 {
+		t.Fatalf("alias request: status=%d routed=%q calls=%d body=%s",
+			response.Code, response.Header().Get("X-Copilot-Proxy-Routed-Model"), upstream.calls, response.Body.String())
+	}
+}
+
 func TestBudgetRejectsMissingPricingBeforeUpstream(t *testing.T) {
 	model := pricedBudgetModel(t, []string{"/v1/messages"})
 	model.Billing.TokenPrices = nil

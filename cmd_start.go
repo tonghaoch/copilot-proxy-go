@@ -24,16 +24,18 @@ import (
 
 func startCmd() *cobra.Command {
 	var (
-		host        string
-		port        int
-		githubToken string
-		accountType string
-		showToken   bool
-		verbose     bool
-		claudeCode  bool
-		codex       bool
-		proxyEnv    bool
-		budgetUSD   float64
+		host           string
+		port           int
+		githubToken    string
+		accountType    string
+		showToken      bool
+		verbose        bool
+		claudeCode     bool
+		codex          bool
+		proxyEnv       bool
+		budgetUSD      float64
+		budgetSpentUSD float64
+		forceCacheTTL  string
 	)
 
 	cmd := &cobra.Command{
@@ -45,13 +47,18 @@ func startCmd() *cobra.Command {
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
 			}
+			if forceCacheTTL != "" && forceCacheTTL != "5m" && forceCacheTTL != "1h" {
+				return fmt.Errorf("--force-cache-ttl must be 5m or 1h")
+			}
 			var budget *state.TokenBudget
 			if cmd.Flags().Changed("budget-usd") {
 				var err error
-				budget, err = state.NewTokenBudget(budgetUSD)
+				budget, err = state.NewTokenBudgetWithSpent(budgetUSD, budgetSpentUSD)
 				if err != nil {
-					return fmt.Errorf("--budget-usd: %w", err)
+					return fmt.Errorf("invalid token budget: %w", err)
 				}
+			} else if cmd.Flags().Changed("budget-spent-usd") {
+				return fmt.Errorf("--budget-spent-usd requires --budget-usd")
 			}
 
 			setupLogging(verbose)
@@ -151,6 +158,7 @@ func startCmd() *cobra.Command {
 
 			endpoints := handler.New(handler.Dependencies{
 				State: state.Global, Metrics: state.Metrics, Budget: budget, Copilot: copilotClient, HTTP: api.HTTPClient(),
+				ForceCacheTTL: forceCacheTTL,
 			})
 			srv := server.NewWithHandler(server.Options{
 				Host: host,
@@ -187,6 +195,8 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0, "estimated per-process token-spend ceiling in USD")
+	cmd.Flags().Float64Var(&budgetSpentUSD, "budget-spent-usd", 0, "restore a prior estimated token spend in USD (requires --budget-usd)")
+	cmd.Flags().StringVar(&forceCacheTTL, "force-cache-ttl", "", "override all native Messages cache breakpoints with 5m or 1h")
 
 	return cmd
 }

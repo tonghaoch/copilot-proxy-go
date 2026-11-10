@@ -106,6 +106,103 @@ func TestBudgetPausesWhenUsageOrPricesAreMissing(t *testing.T) {
 	}
 }
 
+func TestBudgetConservativelyAccountsForMissingUsage(t *testing.T) {
+	model := budgetModel(t)
+	model.Capabilities.Limits = ModelLimits{MaxContextWindowTokens: 1000, MaxOutputTokens: 100}
+	tests := []struct {
+		name   string
+		record RequestRecord
+		want   float64
+	}{
+		{
+			name: "missing output",
+			record: RequestRecord{Backend: "messages", UpstreamAttempted: true, InputUsageKnown: true,
+				InputTokens: 10, CachedTokens: 20, CacheCreationTokens: 5},
+			want: 0.222,
+		},
+		{
+			name: "missing input",
+			record: RequestRecord{Backend: "messages", UpstreamAttempted: true, OutputUsageKnown: true,
+				OutputTokens: 5},
+			want: 4.02,
+		},
+		{
+			name:   "missing both",
+			record: RequestRecord{Backend: "messages", UpstreamAttempted: true},
+			want:   4.4,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, err := NewTokenBudget(100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			admission, err := budget.Admit(model, "messages")
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget.Complete(admission, tt.record)
+			got := budget.Snapshot()
+			if got.Blocked || got.ConservativeEstimates != 1 || math.Abs(got.EstimatedSpentUSD-tt.want) > 0.000000001 {
+				t.Fatalf("conservative budget = %+v, want spend %.3f", got, tt.want)
+			}
+			if _, err := budget.Admit(model, "messages"); err != nil {
+				t.Fatalf("a bounded incomplete request should not pause the proxy: %v", err)
+			}
+		})
+	}
+}
+
+func TestBudgetRestoresPriorSpend(t *testing.T) {
+	budget, err := NewTokenBudgetWithSpent(250, 69.341515202)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := budget.Snapshot()
+	if got.LimitUSD != 250 || got.EstimatedSpentUSD < 69.341515202 || got.RemainingUSD > 180.658484798 {
+		t.Fatalf("restored budget = %+v", got)
+	}
+	for _, invalid := range []float64{-1, math.NaN(), math.Inf(1)} {
+		if _, err := NewTokenBudgetWithSpent(250, invalid); err == nil {
+			t.Fatalf("accepted invalid prior spend %v", invalid)
+		}
+	}
+	exhausted, err := NewTokenBudgetWithSpent(10, 11)
+	if err != nil || !exhausted.Snapshot().Blocked {
+		t.Fatalf("restored spend above limit must remain blocked: budget=%+v err=%v", exhausted, err)
+	}
+}
+
+func TestBudgetFailsClosedWithoutReliableFallbackBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   *Model
+		backend string
+		record  RequestRecord
+	}{
+		{"missing output limit", budgetModel(t), "messages",
+			RequestRecord{Backend: "messages", UpstreamAttempted: true, InputUsageKnown: true}},
+		{"unknown embeddings batch", budgetModel(t), "embeddings",
+			RequestRecord{Backend: "embeddings", UpstreamAttempted: true}},
+		{"invalid partial usage", budgetModel(t), "messages",
+			RequestRecord{Backend: "messages", UpstreamAttempted: true, OutputUsageKnown: true, CachedTokens: -1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget, _ := NewTokenBudget(100)
+			admission, err := budget.Admit(tt.model, tt.backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget.Complete(admission, tt.record)
+			if got := budget.Snapshot(); !got.Blocked || got.Reason == "" {
+				t.Fatalf("unsafe fallback did not pause the budget: %+v", got)
+			}
+		})
+	}
+}
+
 func TestBudgetDoesNotChargeRejectedOrUnsentRequests(t *testing.T) {
 	budget, _ := NewTokenBudget(1)
 	model := budgetModel(t)

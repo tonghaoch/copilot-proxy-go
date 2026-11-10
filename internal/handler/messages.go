@@ -46,12 +46,20 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		// Otherwise the substitution is invisible outside the server log.
 		ww.Header().Set("X-Copilot-Proxy-Routed-Model", req.Model)
 	}
+	model := h.state.FindModel(req.Model)
+	if model == nil {
+		if resolved := resolveAvailableClaudeMajor(req.Model, h.state.GetModels()); resolved != "" {
+			slog.Info("resolved Claude model alias", "requested", req.Model, "model", resolved)
+			req.Model = resolved
+			model = h.state.FindModel(resolved)
+			ww.Header().Set("X-Copilot-Proxy-Routed-Model", resolved)
+		}
+	}
 
 	subagent := detectSubagentMarker(req.Messages)
 	buildSessionSnapshot(&req, betaHeader, subagent, h.metrics)
 	mergeToolResultBlocks(&req)
 	filterUnsupportedTools(&req)
-	model := h.state.FindModel(req.Model)
 
 	forceAgent := false
 	if subagent != nil {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -17,6 +18,61 @@ type cacheTestCopilot struct {
 	body     []byte
 	beta     string
 	response string
+}
+
+type safeguardsTestCopilot struct {
+	capturingResponsesCopilot
+	bodies [][]byte
+	betas  []string
+}
+
+func (c *safeguardsTestCopilot) ProxyMessages(_ context.Context, body []byte, beta string, _, _ bool) (*http.Response, error) {
+	c.bodies = append(c.bodies, append([]byte(nil), body...))
+	c.betas = append(c.betas, beta)
+	if len(c.bodies) == 1 {
+		return nil, &api.HTTPError{StatusCode: http.StatusBadRequest, Body: `{"error":{"message":"safeguards: Extra inputs are not permitted"}}`}
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(
+		`{"id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
+}
+
+func TestClaudeCodeSafeguardsFallback(t *testing.T) {
+	models := &state.State{}
+	models.SetModels([]state.Model{{ID: "claude-test", SupportedEndpoints: []string{"/v1/messages"}}})
+	for _, claudeCode := range []bool{true, false} {
+		upstream := &safeguardsTestCopilot{}
+		h := New(Dependencies{State: models, Metrics: &cacheTestMetrics{}, Copilot: upstream, Config: responsesTestConfig{}})
+		body := `{"model":"claude-test","max_tokens":20,"system":"test","safeguards":[{"type":"dangerous_tool_use"}],"messages":[{"role":"user","content":"hello"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Anthropic-Beta", "other-beta,dangerous-tool-use-2026-09-03")
+		if claudeCode {
+			req.Header.Set("User-Agent", "claude-cli/2.1.280")
+		}
+		response := httptest.NewRecorder()
+		h.Messages(response, req)
+		if !claudeCode {
+			if response.Code != http.StatusBadRequest || len(upstream.bodies) != 1 {
+				t.Fatalf("non-Claude client should receive upstream rejection: status=%d calls=%d", response.Code, len(upstream.bodies))
+			}
+			continue
+		}
+		if response.Code != http.StatusOK || len(upstream.bodies) != 2 || response.Header().Get("X-Copilot-Proxy-Safeguards") != "client-classifier" {
+			t.Fatalf("Claude fallback: status=%d calls=%d header=%q", response.Code, len(upstream.bodies), response.Header().Get("X-Copilot-Proxy-Safeguards"))
+		}
+		var first, second map[string]any
+		if err := json.Unmarshal(upstream.bodies[0], &first); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(upstream.bodies[1], &second); err != nil {
+			t.Fatal(err)
+		}
+		if first["safeguards"] == nil || second["safeguards"] != nil || upstream.betas[0] != "other-beta,dangerous-tool-use-2026-09-03" || upstream.betas[1] != "other-beta" {
+			t.Fatalf("incorrect safeguards fallback: first=%v second=%v betas=%v", first, second, upstream.betas)
+		}
+		if strings.Contains(response.Body.String(), "safeguard_results") {
+			t.Fatal("proxy fabricated a safeguards verdict")
+		}
+	}
 }
 
 func (c *cacheTestCopilot) ProxyMessages(_ context.Context, body []byte, beta string, _, _ bool) (*http.Response, error) {
@@ -91,6 +147,34 @@ func TestNativeCacheControlsAndUsageOnWire(t *testing.T) {
 	}
 	if got := metrics.record; got.InputTokens != 3 || got.CachedTokens != 70 || got.CacheCreationTokens != 20 || got.OutputTokens != 5 {
 		t.Fatalf("recorded usage = %+v", got)
+	}
+}
+
+func TestNativeForceCacheTTLOverridesExplicitValues(t *testing.T) {
+	upstream := &cacheTestCopilot{response: `{"id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`}
+	h := cacheTestHandler(upstream, &cacheTestMetrics{})
+	h.forceCacheTTL = "1h"
+	body := `{"model":"claude-test","max_tokens":20,
+		"system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral","ttl":"5m"}}],
+		"tools":[{"name":"example","input_schema":{"type":"object","properties":{"cache_control":{"ttl":"5m"}}}}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]}`
+	response := httptest.NewRecorder()
+	h.Messages(response, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(upstream.body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	system := sent["system"].([]any)[0].(map[string]any)
+	user := sent["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if cacheControl(t, system)["ttl"] != "1h" || cacheControl(t, user)["ttl"] != "1h" {
+		t.Fatalf("one-hour TTL not forced: system=%v user=%v", system, user)
+	}
+	schema := sent["tools"].([]any)[0].(map[string]any)["input_schema"].(map[string]any)["properties"].(map[string]any)["cache_control"].(map[string]any)
+	if schema["ttl"] != "5m" {
+		t.Fatalf("tool schema modified: %v", schema)
 	}
 }
 

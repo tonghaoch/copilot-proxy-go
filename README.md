@@ -101,6 +101,7 @@ Only `start` supports `--proxy-env`; without it, upstream requests ignore proxy 
 ## Dashboard
 
 Open `http://127.0.0.1:4141/dashboard` while the proxy is running. Local request metrics are kept in memory and reset on restart; Copilot quota is fetched from upstream.
+Total input includes uncached input, cache reads, and cache writes. The cache-write TTL breakdown includes only writes whose TTL was reported by the provider.
 
 <img src="demo/copilot-proxy-dashboard.png" alt="Dashboard" width="500" />
 
@@ -127,6 +128,8 @@ export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="$NO_PROXY"
 claude
 ```
+
+If Copilot rejects Claude Code's server-side `safeguards` field, the proxy retries that Claude Code request without the rejected field and its paired beta header. It does not fabricate safety verdicts: Claude Code falls back to its own classifier requests, which can incur token usage. Set `CLAUDE_CODE_AUTO_MODE_SERVER=0` when launching Claude Code to use that fallback without first attempting server-side checks.
 
 ## Usage with Codex CLI
 
@@ -159,7 +162,7 @@ Configuration is stored in `config.json` in the application data directory, alon
 
 Use `./copilot-proxy-go debug` to see the resolved paths. `smallModel` chooses the compact/warmup routing target; `compactUseSmallModel` enables compact routing and does not affect warmup routing.
 
-For native Messages requests, breakpoints default to one hour when no breakpoint in the request specifies a TTL. Set `cacheTTL` to `"5m"` for five minutes or `""` to leave client breakpoints unchanged; requests containing explicit TTLs are passed through unchanged to preserve their ordering. Responses requests translated to Messages receive cache breakpoints automatically. Cache eligibility and hits depend on the upstream model, minimum prompt length, and an unchanged prefix; one-hour cache writes may cost more than five-minute writes.
+For native Messages requests, breakpoints default to one hour when no breakpoint in the request specifies a TTL. Set `cacheTTL` to `"5m"` for five minutes or `""` to leave client breakpoints unchanged; requests containing explicit TTLs are passed through unchanged to preserve their ordering. To override every native Messages breakpoint, including an explicit client TTL, start with `--force-cache-ttl 1h` (or `5m`). Responses requests translated to Messages receive cache breakpoints automatically. Cache eligibility and hits depend on the upstream model, minimum prompt length, and an unchanged prefix; one-hour cache writes may cost more than five-minute writes.
 
 API-key authentication is disabled when `auth.apiKeys` is empty. To enable it, set `auth.apiKeys` to a list of non-empty keys in `config.json`, then restart the proxy. Clients must send a configured key via `x-api-key` or `Authorization: Bearer <key>`. Replace the `copilot-proxy` placeholder in the manual client examples (and in the generated Claude Code command) with your key; Codex setup automatically uses the first configured key.
 
@@ -187,9 +190,11 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 ./copilot-proxy-go start --budget-usd 200
 ```
 
-The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. Streaming Chat Completions request a final usage report. `/api/stats` exposes the limit, estimate, in-flight count, and any reason admission is blocked.
+The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. If usage is incomplete, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` exposes the limit, estimate, in-flight count, conservative-estimate count, and any reason admission is blocked.
 
-This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, retries, and charges outside this process are not included; restarting resets the estimate. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request, and incomplete upstream usage pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, retries, and charges outside this process are not included. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; incomplete usage with no reliable bound (including an unknown embeddings batch) pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+
+Restarting normally resets the estimate. To carry it forward, note `estimated_spent_usd` from `/api/stats` after in-flight requests finish, then start with, for example, `--budget-usd 200 --budget-spent-usd 42.50`. Include a conservative reserve for any prior requests whose cost was unknown. The restored value is an estimate, not persistent billing reconciliation.
 
 ## CLI Reference
 
@@ -203,6 +208,8 @@ Flags:
   -c, --claude-code           interactive model selection for Claude Code
       --codex                 interactive model selection for Codex CLI
       --budget-usd float      estimated per-process token-spend ceiling in USD
+      --budget-spent-usd float  restore prior estimated spend (requires --budget-usd)
+      --force-cache-ttl string  override native Messages cache breakpoints: 5m or 1h
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)

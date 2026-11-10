@@ -17,11 +17,12 @@ var (
 
 // TokenBudget tracks a per-process estimate, not a GitHub invoice or hard cap.
 type TokenBudget struct {
-	mu       sync.Mutex
-	limit    int64
-	spent    int64
-	inFlight int
-	blocked  string
+	mu                    sync.Mutex
+	limit                 int64
+	spent                 int64
+	inFlight              int
+	blocked               string
+	conservativeEstimates int64
 }
 
 type BudgetAdmission struct {
@@ -31,20 +32,30 @@ type BudgetAdmission struct {
 }
 
 type BudgetSnapshot struct {
-	LimitUSD          float64 `json:"limit_usd"`
-	EstimatedSpentUSD float64 `json:"estimated_spent_usd"`
-	RemainingUSD      float64 `json:"remaining_usd"`
-	InFlight          int     `json:"in_flight"`
-	Blocked           bool    `json:"blocked"`
-	Reason            string  `json:"reason,omitempty"`
+	LimitUSD              float64 `json:"limit_usd"`
+	EstimatedSpentUSD     float64 `json:"estimated_spent_usd"`
+	RemainingUSD          float64 `json:"remaining_usd"`
+	InFlight              int     `json:"in_flight"`
+	Blocked               bool    `json:"blocked"`
+	Reason                string  `json:"reason,omitempty"`
+	ConservativeEstimates int64   `json:"conservative_estimates"`
 }
 
 func NewTokenBudget(limitUSD float64) (*TokenBudget, error) {
+	return NewTokenBudgetWithSpent(limitUSD, 0)
+}
+
+// NewTokenBudgetWithSpent restores an estimate carried over from an earlier process.
+func NewTokenBudgetWithSpent(limitUSD, spentUSD float64) (*TokenBudget, error) {
 	nanos := math.Floor(limitUSD * nanoUSD)
 	if math.IsNaN(nanos) || math.IsInf(nanos, 0) || nanos < 1 || nanos >= float64(math.MaxInt64) {
 		return nil, errors.New("budget must be a positive, finite USD amount of at least $0.000000001")
 	}
-	return &TokenBudget{limit: int64(nanos)}, nil
+	spent := math.Ceil(spentUSD * nanoUSD)
+	if math.IsNaN(spent) || math.IsInf(spent, 0) || spentUSD < 0 || spent >= float64(math.MaxInt64) {
+		return nil, errors.New("prior estimated spend must be a non-negative, finite USD amount")
+	}
+	return &TokenBudget{limit: int64(nanos), spent: int64(spent)}, nil
 }
 
 // Admit snapshots prices when a request enters; already admitted work may finish.
@@ -134,11 +145,14 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 		b.pause(admission.model.ID, "upstream backend differed from the admitted pricing")
 		return
 	}
-	if !rec.InputUsageKnown || (admission.backend != "embeddings" && !rec.OutputUsageKnown) {
-		b.pause(admission.model.ID, "upstream did not report complete token usage")
-		return
+	complete := rec.InputUsageKnown && (admission.backend == "embeddings" || rec.OutputUsageKnown)
+	var cost int64
+	var err error
+	if complete {
+		cost, err = estimateTokenCost(admission.model.Billing, rec)
+	} else {
+		cost, err = estimateIncompleteTokenCost(admission.model, rec)
 	}
-	cost, err := estimateTokenCost(admission.model.Billing, rec)
 	if err != nil {
 		b.pause(admission.model.ID, err.Error())
 		return
@@ -148,6 +162,11 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 		return
 	}
 	b.spent += cost
+	if !complete {
+		b.conservativeEstimates++
+		slog.Warn("upstream usage incomplete; reserved conservative token cost",
+			"model", admission.model.ID, "reserved_usd", float64(cost)/nanoUSD)
+	}
 }
 
 func (b *TokenBudget) pause(model, reason string) {
@@ -168,8 +187,48 @@ func (b *TokenBudget) Snapshot() BudgetSnapshot {
 	return BudgetSnapshot{
 		LimitUSD: float64(b.limit) / nanoUSD, EstimatedSpentUSD: float64(b.spent) / nanoUSD,
 		RemainingUSD: float64(remaining) / nanoUSD, InFlight: b.inFlight,
-		Blocked: reason != "", Reason: reason,
+		Blocked: reason != "", Reason: reason, ConservativeEstimates: b.conservativeEstimates,
 	}
+}
+
+func estimateIncompleteTokenCost(model Model, rec RequestRecord) (int64, error) {
+	limits := model.Capabilities.Limits
+	if !rec.OutputUsageKnown && rec.Backend != "embeddings" {
+		if limits.MaxOutputTokens <= 0 {
+			return 0, errors.New("upstream did not report output usage and model output limit is missing")
+		}
+		rec.OutputTokens = int64(limits.MaxOutputTokens)
+	}
+	if rec.InputUsageKnown {
+		return estimateTokenCost(model.Billing, rec)
+	}
+	if rec.Backend == "embeddings" {
+		return 0, errors.New("upstream did not report input usage for an embeddings batch")
+	}
+	if rec.InputTokens < 0 || rec.OutputTokens < 0 || rec.CachedTokens < 0 || rec.CacheCreationTokens < 0 {
+		return 0, errors.New("upstream reported invalid token counts")
+	}
+	maxInput := max(limits.MaxContextWindowTokens, limits.MaxPromptTokens)
+	for _, tier := range model.Billing.TokenPrices {
+		maxInput = max(maxInput, tier.MaxPromptTokens)
+	}
+	if maxInput <= 0 {
+		return 0, errors.New("upstream did not report input usage and model input limit is missing")
+	}
+	observedInput := float64(rec.InputTokens) + float64(rec.CachedTokens) + float64(rec.CacheCreationTokens)
+	if observedInput > float64(maxInput) {
+		return 0, errors.New("partial input usage exceeds the model limit")
+	}
+	var inputPrice, outputPrice float64
+	for _, tier := range model.Billing.TokenPrices {
+		inputPrice = max(inputPrice, tier.InputPrice, tier.CacheReadPrice, tier.CacheWritePrice)
+		if rec.Backend == "messages" {
+			inputPrice = max(inputPrice, tier.CacheWrite1hPrice)
+		}
+		outputPrice = max(outputPrice, tier.OutputPrice)
+	}
+	credits := float64(maxInput)*inputPrice + float64(rec.OutputTokens)*outputPrice
+	return creditsToNanoUSD(model.Billing.BatchSize, credits)
 }
 
 func estimateTokenCost(billing ModelBilling, rec RequestRecord) (int64, error) {
@@ -212,9 +271,12 @@ func estimateTokenCost(billing ModelBilling, rec RequestRecord) (int64, error) {
 			credits += float64(rec.CacheCreationTokens) * tier.CacheWritePrice
 		}
 	}
-	// Prices are AI credits per batch; one AI credit is $0.01. Round up
-	// per request so rounding cannot slowly understate the ceiling.
-	nanos := math.Ceil(credits / float64(billing.BatchSize) * (nanoUSD / 100))
+	return creditsToNanoUSD(billing.BatchSize, credits)
+}
+
+func creditsToNanoUSD(batchSize int64, credits float64) (int64, error) {
+	// Prices are AI credits per batch; one AI credit is $0.01.
+	nanos := math.Ceil(credits / float64(batchSize) * (nanoUSD / 100))
 	if math.IsNaN(nanos) || math.IsInf(nanos, 0) || nanos < 0 || nanos >= float64(math.MaxInt64) {
 		return 0, errors.New("estimated cost is invalid or too large")
 	}

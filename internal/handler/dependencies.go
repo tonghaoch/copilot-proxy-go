@@ -85,26 +85,28 @@ func (defaultHTTPDoer) Do(req *http.Request) (*http.Response, error) {
 
 // Dependencies contains the process services consumed by Handler.
 type Dependencies struct {
-	State     ApplicationState
-	Metrics   MetricsStore
-	Budget    *state.TokenBudget
-	Copilot   CopilotClient
-	HTTP      HTTPDoer
-	Anthropic AnthropicAdapter
-	Streams   StreamDecoder
-	Config    RuntimeConfig
+	State         ApplicationState
+	Metrics       MetricsStore
+	Budget        *state.TokenBudget
+	Copilot       CopilotClient
+	HTTP          HTTPDoer
+	Anthropic     AnthropicAdapter
+	Streams       StreamDecoder
+	Config        RuntimeConfig
+	ForceCacheTTL string
 }
 
 // Handler is the HTTP adapter for all public proxy endpoints.
 type Handler struct {
-	state     ApplicationState
-	metrics   MetricsStore
-	budget    *state.TokenBudget
-	copilot   CopilotClient
-	http      HTTPDoer
-	anthropic AnthropicAdapter
-	streams   StreamDecoder
-	config    RuntimeConfig
+	state         ApplicationState
+	metrics       MetricsStore
+	budget        *state.TokenBudget
+	copilot       CopilotClient
+	http          HTTPDoer
+	anthropic     AnthropicAdapter
+	streams       StreamDecoder
+	config        RuntimeConfig
+	forceCacheTTL string
 }
 
 func New(deps Dependencies) *Handler {
@@ -132,6 +134,7 @@ func New(deps Dependencies) *Handler {
 	return &Handler{
 		state: deps.State, metrics: deps.Metrics, budget: deps.Budget, copilot: deps.Copilot,
 		http: deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
+		forceCacheTTL: deps.ForceCacheTTL,
 	}
 }
 

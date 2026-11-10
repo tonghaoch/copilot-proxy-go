@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
@@ -117,6 +118,30 @@ func ResolveCopilotModel(model string) string {
 	model = strings.TrimSuffix(model, claudeLongSuffix)
 	model = strings.TrimSuffix(model, otherLongSuffix)
 	return dashVersionToDot(model)
+}
+
+// resolveAvailableClaudeMajor handles clients that request a major-only
+// Claude alias when Copilot advertises only numbered minor releases.
+func resolveAvailableClaudeMajor(model string, models []state.Model) string {
+	want := claudeDotRe.FindStringSubmatch(model)
+	if want == nil || want[3] != "" || want[4] != "" {
+		return ""
+	}
+	best, bestMinor := "", -1
+	for _, candidate := range models {
+		if candidate.Policy.State != "" && candidate.Policy.State != "enabled" {
+			continue
+		}
+		match := claudeDotRe.FindStringSubmatch(candidate.ID)
+		if match == nil || match[1] != want[1] || match[2] != want[2] || match[3] == "" || match[4] != "" {
+			continue
+		}
+		minor, err := strconv.Atoi(match[3])
+		if err == nil && minor > bestMinor {
+			best, bestMinor = candidate.ID, minor
+		}
+	}
+	return best
 }
 
 // dashVersionToDot turns "claude-opus-4-7" into "claude-opus-4.7". Idempotent

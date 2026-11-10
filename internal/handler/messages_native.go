@@ -40,7 +40,11 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 
 	// Strip unsupported "scope" from cache_control (Claude Code 2.1.89+)
 	stripCacheControlScope(payload)
-	applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
+	if h.forceCacheTTL != "" {
+		forceCacheTTL(payload, h.forceCacheTTL)
+	} else {
+		applyCacheTTL(payload, h.config.Snapshot().EffectiveCacheTTL())
+	}
 
 	// Set up adaptive thinking if supported. Returns the effort the user asked
 	// for (post-clamp); used by the 400-retry path to pick a fallback when
@@ -76,6 +80,18 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 
 	rec.UpstreamAttempted = true
 	resp, err := h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
+	if err != nil && strings.HasPrefix(strings.ToLower(r.UserAgent()), "claude-cli/") && rejectsSafeguards(err, payload) {
+		delete(payload, "safeguards")
+		betaHeader = removeBetaHeader(betaHeader, "dangerous-tool-use-2026-09-03")
+		body, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			api.ForwardError(w, marshalErr)
+			return
+		}
+		slog.Warn("Copilot rejected server-side safeguards; Claude Code must use its own classifier")
+		w.Header().Set("X-Copilot-Proxy-Safeguards", "client-classifier")
+		resp, err = h.copilot.ProxyMessages(r.Context(), body, betaHeader, vision, isAgent)
+	}
 	if err != nil {
 		// If Copilot rejected our effort, cache the supported list, rewrite
 		// the payload, and retry exactly once. Anything else propagates.
@@ -140,6 +156,29 @@ func (h *Handler) handleWithMessagesAPI(w http.ResponseWriter, r *http.Request, 
 			captureNativeUsage(rec, anthResp.Usage, true)
 		}
 	}
+}
+
+func rejectsSafeguards(err error, payload map[string]any) bool {
+	if _, ok := payload["safeguards"]; !ok {
+		return false
+	}
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(httpErr.Body)
+	return strings.Contains(body, "safeguards") && strings.Contains(body, "extra inputs are not permitted")
+}
+
+func removeBetaHeader(header, removed string) string {
+	var kept []string
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" && part != removed {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, ",")
 }
 
 type nativeTokenUsage struct {

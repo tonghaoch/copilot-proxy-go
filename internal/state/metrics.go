@@ -31,9 +31,9 @@ type RequestRecord struct {
 	UpstreamRejected       bool  `json:"-"`
 	InputUsageKnown        bool  `json:"-"`
 	OutputUsageKnown       bool  `json:"-"`
-	CacheWrite5mTokens     int64 `json:"-"`
-	CacheWrite1hTokens     int64 `json:"-"`
-	CacheWriteDetailsKnown bool  `json:"-"`
+	CacheWrite5mTokens     int64 `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens     int64 `json:"cache_write_1h_tokens,omitempty"`
+	CacheWriteDetailsKnown bool  `json:"cache_write_details_known,omitempty"`
 	CacheWriteUsageKnown   bool  `json:"-"`
 }
 
@@ -71,6 +71,8 @@ type Aggregates struct {
 	TotalOutputTokens        int64            `json:"total_output_tokens"`
 	TotalCachedTokens        int64            `json:"total_cached_tokens"`
 	TotalCacheCreationTokens int64            `json:"total_cache_creation_tokens"`
+	TotalCacheWrite5mTokens  int64            `json:"total_cache_write_5m_tokens"`
+	TotalCacheWrite1hTokens  int64            `json:"total_cache_write_1h_tokens"`
 	ModelCounts              map[string]int64 `json:"model_counts"`
 	BackendCounts            map[string]int64 `json:"backend_counts"`
 	TypeCounts               map[string]int64 `json:"type_counts"`
@@ -125,6 +127,10 @@ func (m *metricsStore) RecordRequest(rec RequestRecord) {
 	m.agg.TotalOutputTokens += rec.OutputTokens
 	m.agg.TotalCachedTokens += rec.CachedTokens
 	m.agg.TotalCacheCreationTokens += rec.CacheCreationTokens
+	if rec.CacheWriteDetailsKnown {
+		m.agg.TotalCacheWrite5mTokens += rec.CacheWrite5mTokens
+		m.agg.TotalCacheWrite1hTokens += rec.CacheWrite1hTokens
+	}
 
 	model := rec.RoutedModel
 	if model == "" {

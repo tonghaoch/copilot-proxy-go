@@ -23,10 +23,12 @@ type statsResponse struct {
 }
 
 type statsTokens struct {
-	Input         int64 `json:"input"`
-	Output        int64 `json:"output"`
-	Cached        int64 `json:"cached"`
-	CacheCreation int64 `json:"cache_creation"`
+	Input           int64 `json:"input"`
+	Output          int64 `json:"output"`
+	Cached          int64 `json:"cached"`
+	CacheCreation   int64 `json:"cache_creation"`
+	CacheCreation5m int64 `json:"cache_creation_5m"`
+	CacheCreation1h int64 `json:"cache_creation_1h"`
 }
 
 type statsSession struct {
@@ -54,6 +56,8 @@ type statsConfig struct {
 	ReasoningEfforts     map[string]string `json:"reasoning_efforts"`
 	AuthEnabled          bool              `json:"auth_enabled"`
 	APIKeyCount          int               `json:"api_key_count"`
+	CacheTTL             string            `json:"cache_ttl"`
+	ForceCacheTTL        string            `json:"force_cache_ttl,omitempty"`
 }
 
 // Stats handles GET /api/stats — returns all dashboard metrics as JSON.
@@ -95,10 +99,12 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds: int64(time.Since(snap.Aggregates.StartTime).Seconds()),
 		TotalRequests: snap.Aggregates.TotalRequests,
 		Tokens: statsTokens{
-			Input:         snap.Aggregates.TotalInputTokens,
-			Output:        snap.Aggregates.TotalOutputTokens,
-			Cached:        snap.Aggregates.TotalCachedTokens,
-			CacheCreation: snap.Aggregates.TotalCacheCreationTokens,
+			Input:           snap.Aggregates.TotalInputTokens,
+			Output:          snap.Aggregates.TotalOutputTokens,
+			Cached:          snap.Aggregates.TotalCachedTokens,
+			CacheCreation:   snap.Aggregates.TotalCacheCreationTokens,
+			CacheCreation5m: snap.Aggregates.TotalCacheWrite5mTokens,
+			CacheCreation1h: snap.Aggregates.TotalCacheWrite1hTokens,
 		},
 		ModelCounts:   snap.Aggregates.ModelCounts,
 		BackendCounts: snap.Aggregates.BackendCounts,
@@ -113,6 +119,8 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 			ReasoningEfforts:     cfg.ModelReasoningEfforts,
 			AuthEnabled:          len(apiKeys) > 0,
 			APIKeyCount:          len(apiKeys),
+			CacheTTL:             cfg.EffectiveCacheTTL(),
+			ForceCacheTTL:        h.forceCacheTTL,
 		},
 	}
 	if h.budget != nil {
