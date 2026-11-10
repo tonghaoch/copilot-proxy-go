@@ -128,6 +128,14 @@ export no_proxy="$NO_PROXY"
 claude
 ```
 
+For persistent Claude Code setup, use:
+
+```bash
+./copilot-proxy-go start --claude-code --save-settings
+```
+
+This writes the selected model and proxy environment variables to `~/.claude/settings.json`, preserving other settings and environment entries. An existing file is backed up to `settings.json.bak` (replaced on each save). When proxy API keys are configured, the first key is saved as `ANTHROPIC_AUTH_TOKEN`; protect both settings and backup files. Newly written files have owner-only permissions where supported, and the proxy must be running when Claude Code uses them.
+
 ## Usage with Codex CLI
 
 ```bash
@@ -194,6 +202,7 @@ Flags:
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)
       --proxy-env             enable HTTP proxy from env vars (HTTP_PROXY/HTTPS_PROXY; lowercase also supported)
+      --save-settings         save Claude Code environment to settings.json (requires --claude-code)
       --show-token            print tokens to console
   -v, --verbose               enable verbose/debug logging
 ```

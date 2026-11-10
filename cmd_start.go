@@ -24,15 +24,16 @@ import (
 
 func startCmd() *cobra.Command {
 	var (
-		host        string
-		port        int
-		githubToken string
-		accountType string
-		showToken   bool
-		verbose     bool
-		claudeCode  bool
-		codex       bool
-		proxyEnv    bool
+		host         string
+		port         int
+		githubToken  string
+		accountType  string
+		showToken    bool
+		verbose      bool
+		claudeCode   bool
+		codex        bool
+		saveSettings bool
+		proxyEnv     bool
 	)
 
 	cmd := &cobra.Command{
@@ -43,6 +44,9 @@ func startCmd() *cobra.Command {
 			defer cancelApp()
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
+			}
+			if saveSettings && !claudeCode {
+				return fmt.Errorf("--save-settings requires --claude-code")
 			}
 
 			setupLogging(verbose)
@@ -93,7 +97,10 @@ func startCmd() *cobra.Command {
 			slog.Info("models loaded", "count", len(models))
 
 			if claudeCode {
-				if err := runClaudeCodeSetup(port, models); err != nil {
+				if err := runClaudeCodeSetup(port, models, saveSettings); err != nil {
+					if saveSettings {
+						return fmt.Errorf("claude-code setup failed: %w", err)
+					}
 					slog.Warn("claude-code setup failed", "error", err)
 				}
 			}
@@ -148,6 +155,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
+	cmd.Flags().BoolVar(&saveSettings, "save-settings", false, "save Claude Code environment in ~/.claude/settings.json (requires --claude-code)")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
 
 	return cmd
