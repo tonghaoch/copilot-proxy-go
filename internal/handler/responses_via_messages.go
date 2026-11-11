@@ -16,7 +16,7 @@ import (
 // responsesViaMessages serves a Responses request for a model that only
 // supports Messages or Chat Completions. The request is converted to Anthropic
 // form, routed like any /v1/messages call, and the reply is converted back.
-func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, payload map[string]any, modelID string, model *state.Model, rec *state.RequestRecord) {
+func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, payload map[string]any, modelID string, model *state.Model, rec *state.RequestRecord, direct bool) {
 	if previous, ok := payload["previous_response_id"]; ok && previous != nil {
 		api.ForwardError(w, api.InvalidRequest("previous_response_id is not supported by this model's translated backend", nil))
 		return
@@ -32,11 +32,33 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 	if limit := model.Capabilities.Limits.MaxNonStreamingOutput; !req.Stream && limit > 0 && req.MaxTokens > limit {
 		req.MaxTokens = limit
 	}
-	filterUnsupportedTools(req)
+	if direct && req.OutputConfig != nil && req.Thinking == nil && model.Capabilities.Supports.AdaptiveThinking {
+		req.Thinking = &ThinkingConfig{Type: "adaptive"}
+	}
+	if !direct {
+		filterUnsupportedTools(req)
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		api.ForwardError(w, err)
 		return
+	}
+	if direct {
+		var native map[string]any
+		if err := json.Unmarshal(body, &native); err != nil {
+			api.ForwardError(w, err)
+			return
+		}
+		for _, key := range []string{"speed", "inference_geo"} {
+			if value, ok := payload[key]; ok {
+				native[key] = value
+			}
+		}
+		body, err = json.Marshal(native)
+		if err != nil {
+			api.ForwardError(w, err)
+			return
+		}
 	}
 	body = addCacheBreakpoints(body)
 	rec.Backend = "responses_via_messages"
@@ -48,10 +70,10 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 
 	capture := &anthropicCaptureWriter{ResponseWriter: w, header: http.Header{}}
 	if req.Stream {
-		h.streamResponsesViaMessages(w, r, req, model, forceAgent, body, rec, capture, customTools)
+		h.streamResponsesViaMessages(w, r, req, model, forceAgent, body, rec, capture, customTools, direct)
 		return
 	}
-	h.dispatchMessages(capture, r, req, model, forceAgent, body, rec)
+	h.dispatchMessages(capture, r, req, model, forceAgent, body, rec, direct)
 
 	if capture.status >= 400 {
 		w.WriteHeader(capture.status)
@@ -72,7 +94,7 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 	json.NewEncoder(w).Encode(result)
 }
 
-func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord, capture *anthropicCaptureWriter, customTools responseTools) {
+func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord, capture *anthropicCaptureWriter, customTools responseTools, direct bool) {
 	if _, ok := w.(http.Flusher); !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
@@ -102,7 +124,7 @@ func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Requ
 		}
 		done <- err
 	}()
-	h.dispatchMessages(capture, r.WithContext(ctx), req, model, forceAgent, body, rec)
+	h.dispatchMessages(capture, r.WithContext(ctx), req, model, forceAgent, body, rec, direct)
 	writer.Close()
 	err := <-done
 	if capture.status >= 400 {

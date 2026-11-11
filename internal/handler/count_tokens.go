@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
@@ -36,6 +37,32 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 
 	anthropicBeta := r.Header.Get("Anthropic-Beta")
 
+	if h.directAnthropic != nil {
+		if model := h.directAnthropic.FindModel(ResolveAnthropicModel(req.Model)); model != nil {
+			raw["model"] = model.ID
+			delete(raw, "stream")
+			stripCacheControlScope(raw)
+			body, err := json.Marshal(raw)
+			if err != nil {
+				api.ForwardError(w, err)
+				return
+			}
+			w.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
+			resp, err := h.directAnthropic.ProxyCountTokens(r.Context(), body, r.Header)
+			if err != nil {
+				api.ForwardError(w, err)
+				return
+			}
+			defer resp.Body.Close()
+			copyAnthropicResponseHeaders(w.Header(), resp.Header)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			io.Copy(w, resp.Body)
+			return
+		}
+	}
+
+	w.Header().Set("X-Copilot-Proxy-Upstream", "copilot")
 	// Translate Claude Code-style names → Copilot IDs.
 	req.Model = ResolveCopilotModel(req.Model)
 

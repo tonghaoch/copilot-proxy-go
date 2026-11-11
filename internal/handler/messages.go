@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
@@ -32,37 +35,57 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	betaHeader := r.Header.Get("Anthropic-Beta")
 	originalModel := req.Model
-	if newBody, resolved := RewriteModelInBody(body); resolved != "" {
-		body = newBody
-		req.Model = resolved
+	var preferredModel *state.Model
+	if h.directAnthropic != nil {
+		preferredModel = h.directAnthropic.FindModel(ResolveAnthropicModel(req.Model))
 	}
-	logger.For("messages").Log("model=%s stream=%v initiator=%s", req.Model, req.Stream, initiatorStr(isInitiatorAgent(req.Messages)))
-
 	reqType := "normal"
 	if isCompactRequest(&req) {
 		reqType = "compact"
-	} else if isWarmupRequest(&req, betaHeader) {
+	} else if isWarmupRequest(&req, betaHeader) && (preferredModel == nil || req.MaxTokens == 1) {
 		reqType = "warmup"
 	}
-	if changed := applySmallModelIfNeeded(&req, betaHeader, h.config); changed {
+	routedSmall := reqType != "normal" && applySmallModelIfNeeded(&req, betaHeader, h.config)
+	if routedSmall {
 		slog.Info("routed to small model", "model", req.Model, "reason", "compact/warmup")
-		// Otherwise the substitution is invisible outside the server log.
+	}
+
+	model := preferredModel
+	if routedSmall && h.directAnthropic != nil {
+		model = h.directAnthropic.FindModel(ResolveAnthropicModel(req.Model))
+	}
+	direct := model != nil
+	if direct {
+		req.Model = model.ID
+		ww.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
+		if req.Model != originalModel {
+			ww.Header().Set("X-Copilot-Proxy-Routed-Model", req.Model)
+		}
+	} else {
+		req.Model = ResolveCopilotModel(req.Model)
+	}
+	if routedSmall {
 		ww.Header().Set("X-Copilot-Proxy-Routed-Model", req.Model)
 	}
-	model := h.state.FindModel(req.Model)
-	if model == nil {
-		if resolved := resolveAvailableClaudeMajor(req.Model, h.state.GetModels()); resolved != "" {
-			slog.Info("resolved Claude model alias", "requested", req.Model, "model", resolved)
-			req.Model = resolved
-			model = h.state.FindModel(resolved)
-			ww.Header().Set("X-Copilot-Proxy-Routed-Model", resolved)
+	logger.For("messages").Log("model=%s stream=%v initiator=%s", req.Model, req.Stream, initiatorStr(isInitiatorAgent(req.Messages)))
+	if !direct {
+		model = h.state.FindModel(req.Model)
+		if model == nil {
+			if resolved := resolveAvailableClaudeMajor(req.Model, h.state.GetModels()); resolved != "" {
+				slog.Info("resolved Claude model alias", "requested", req.Model, "model", resolved)
+				req.Model = resolved
+				model = h.state.FindModel(resolved)
+				ww.Header().Set("X-Copilot-Proxy-Routed-Model", resolved)
+			}
 		}
 	}
 
 	subagent := detectSubagentMarker(req.Messages)
 	buildSessionSnapshot(&req, betaHeader, subagent, h.metrics)
 	mergeToolResultBlocks(&req)
-	filterUnsupportedTools(&req)
+	if !direct {
+		filterUnsupportedTools(&req)
+	}
 
 	forceAgent := false
 	if subagent != nil {
@@ -81,19 +104,75 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		rec.ThinkingBudget = req.Thinking.BudgetTokens
 	}
 
-	if !h.admitBudget(ww, tracked, model, messagesBackend(model)) {
+	if direct || messagesBackend(model) == "messages" {
+		var options struct {
+			Speed             string          `json:"speed"`
+			InferenceGeo      string          `json:"inference_geo"`
+			Compaction        json.RawMessage `json:"compaction"`
+			Fallbacks         json.RawMessage `json:"fallbacks"`
+			ContextManagement struct {
+				Edits []struct {
+					Type string `json:"type"`
+				} `json:"edits"`
+			} `json:"context_management"`
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &options); err != nil {
+			api.ForwardError(ww, api.InvalidRequest("invalid Anthropic request options", err))
+			return
+		}
+		hasValue := func(raw json.RawMessage) bool {
+			return len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+		}
+		rec.RequireIterations = hasValue(options.Compaction)
+		rec.MultiIterationRisk = rec.RequireIterations
+		for _, edit := range options.ContextManagement.Edits {
+			if strings.HasPrefix(edit.Type, "compact_") {
+				rec.MultiIterationRisk = true
+			}
+		}
+		for _, tool := range options.Tools {
+			if tool.Type != "" && tool.Type != "custom" {
+				rec.MultiIterationRisk = true
+			}
+			if h.budget != nil && strings.HasPrefix(tool.Type, "advisor_") {
+				api.ForwardError(ww, api.InvalidRequest("Anthropic advisor tools cannot be budgeted safely", nil))
+				return
+			}
+		}
+		if h.budget != nil && hasValue(options.Fallbacks) {
+			api.ForwardError(ww, api.InvalidRequest("Anthropic server-side fallbacks cannot be budgeted safely", nil))
+			return
+		}
+		if direct {
+			if !h.admitAnthropicBudget(ww, tracked, model, options.Speed, options.InferenceGeo) {
+				return
+			}
+		} else if !h.admitBudget(ww, tracked, model, "messages") {
+			return
+		}
+	} else if !h.admitBudget(ww, tracked, model, messagesBackend(model)) {
 		return
 	}
 	if subagent != nil {
 		r = r.WithContext(service.WithSubagentInteraction(r.Context()))
 	}
-	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec)
+	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec, direct)
 }
 
 // dispatchMessages sends a parsed Anthropic request to the backend that serves
 // its model: native Messages, Responses, or Chat Completions. Split out so the
 // Responses endpoint can reuse the router for models without /responses.
-func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord) {
+func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord, direct bool) {
+	if direct {
+		rec.Backend = "anthropic"
+		w.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
+		h.handleWithDirectAnthropicAPI(w, r, req, body, rec)
+		return
+	}
+	w.Header().Set("X-Copilot-Proxy-Upstream", "copilot")
 	rec.Backend = messagesBackend(model)
 	switch rec.Backend {
 	case "messages":

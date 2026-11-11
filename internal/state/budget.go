@@ -91,7 +91,7 @@ func (b *TokenBudget) Admit(model *Model, backend string) (*BudgetAdmission, err
 }
 
 func validateBudgetPricing(billing ModelBilling, backend string) error {
-	if backend != "messages" && backend != "responses" && backend != "chat_completions" && backend != "embeddings" {
+	if !isMessagesBackend(backend) && backend != "responses" && backend != "chat_completions" && backend != "embeddings" {
 		return errors.New("unknown model backend")
 	}
 	if billing.BatchSize <= 0 {
@@ -129,11 +129,15 @@ func validateBaseRates(tier PriceTier, backend string) error {
 		if !tier.hasCacheWritePrice || !validPrice(tier.CacheWritePrice) {
 			return errors.New("cache-write token price is missing or invalid")
 		}
-		if backend == "messages" && (!tier.hasCacheWrite1hPrice || !validPrice(tier.CacheWrite1hPrice)) {
+		if isMessagesBackend(backend) && (!tier.hasCacheWrite1hPrice || !validPrice(tier.CacheWrite1hPrice)) {
 			return errors.New("one-hour cache-write token price is missing or invalid")
 		}
 	}
 	return nil
+}
+
+func isMessagesBackend(backend string) bool {
+	return backend == "messages" || backend == "anthropic"
 }
 
 func validPrice(price float64) bool {
@@ -158,10 +162,26 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 		return
 	}
 	complete := rec.InputUsageKnown && (admission.backend == "embeddings" || rec.OutputUsageKnown)
+	if !rec.UpstreamRejected {
+		if rec.UsageAccountingError != "" {
+			b.pause(admission.model.ID, rec.UsageAccountingError)
+			return
+		}
+		if rec.RequireIterations && len(rec.UsageIterations) == 0 {
+			b.pause(admission.model.ID, "upstream omitted compaction iteration usage")
+			return
+		}
+		if !complete && (rec.MultiIterationRisk || len(rec.UsageIterations) > 0) {
+			b.pause(admission.model.ID, "multi-iteration request did not report complete usage")
+			return
+		}
+	}
 	var cost, reserve int64
 	var err error
 	if !rec.UpstreamRejected {
-		if complete {
+		if complete && len(rec.UsageIterations) > 0 {
+			cost, err = estimateIterationTokenCost(admission.model.Billing, admission.backend, rec.UsageIterations)
+		} else if complete {
 			cost, err = estimateTokenCost(admission.model.Billing, rec)
 		} else {
 			cost, err = estimateIncompleteTokenCost(admission.model, rec)
@@ -200,6 +220,33 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 		slog.Warn("upstream usage incomplete; reserved conservative token cost",
 			"model", admission.model.ID, "reserved_usd", float64(reserve)/nanoUSD)
 	}
+}
+
+func estimateIterationTokenCost(billing ModelBilling, backend string, iterations []TokenUsageIteration) (int64, error) {
+	var total int64
+	for _, iteration := range iterations {
+		if iteration.Type != "message" && iteration.Type != "compaction" {
+			return 0, fmt.Errorf("unpriced Anthropic usage iteration %q", iteration.Type)
+		}
+		if !iteration.InputUsageKnown || !iteration.OutputUsageKnown {
+			return 0, errors.New("Anthropic iteration token usage is incomplete")
+		}
+		cost, err := estimateTokenCost(billing, RequestRecord{
+			Backend:     backend,
+			InputTokens: iteration.InputTokens, OutputTokens: iteration.OutputTokens,
+			CachedTokens: iteration.CachedTokens, CacheCreationTokens: iteration.CacheCreationTokens,
+			CacheWrite5mTokens: iteration.CacheWrite5mTokens, CacheWrite1hTokens: iteration.CacheWrite1hTokens,
+			CacheWriteDetailsKnown: iteration.CacheWriteDetailsKnown,
+		})
+		if err != nil {
+			return 0, err
+		}
+		if cost > math.MaxInt64-total {
+			return 0, errors.New("estimated cost overflowed")
+		}
+		total += cost
+	}
+	return total, nil
 }
 
 func (b *TokenBudget) pause(model, reason string) {
@@ -256,7 +303,7 @@ func estimateIncompleteTokenCost(model Model, rec RequestRecord) (int64, error) 
 	var inputPrice, outputPrice float64
 	for _, tier := range model.Billing.TokenPrices {
 		inputPrice = max(inputPrice, tier.InputPrice, tier.CacheReadPrice, tier.CacheWritePrice)
-		if rec.Backend == "messages" {
+		if isMessagesBackend(rec.Backend) {
 			inputPrice = max(inputPrice, tier.CacheWrite1hPrice)
 		}
 		outputPrice = max(outputPrice, tier.OutputPrice)
@@ -276,7 +323,7 @@ func estimateTokenCost(billing ModelBilling, rec RequestRecord) (int64, error) {
 	}
 
 	inputPrice := tier.InputPrice
-	if rec.Backend != "messages" && rec.Backend != "embeddings" && rec.InputTokens > 0 && !rec.CacheWriteUsageKnown {
+	if !isMessagesBackend(rec.Backend) && rec.Backend != "embeddings" && rec.InputTokens > 0 && !rec.CacheWriteUsageKnown {
 		// These protocols may not report which uncached input tokens were
 		// written to a cache, so use the higher rate for those tokens.
 		if !tier.hasCacheWritePrice || !validPrice(tier.CacheWritePrice) {
@@ -292,7 +339,7 @@ func estimateTokenCost(billing ModelBilling, rec RequestRecord) (int64, error) {
 		credits += float64(rec.CachedTokens) * tier.CacheReadPrice
 	}
 	if rec.CacheCreationTokens > 0 {
-		if rec.Backend == "messages" {
+		if isMessagesBackend(rec.Backend) {
 			writes, err := cacheWriteCost(tier, rec)
 			if err != nil {
 				return 0, err

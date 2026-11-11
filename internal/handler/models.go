@@ -50,6 +50,9 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 		models = fetched
 	}
 
+	if h.directAnthropic != nil {
+		models = MergeProviderModels(models, h.directAnthropic.Models())
+	}
 	entries := make([]ModelEntry, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, m := range models {

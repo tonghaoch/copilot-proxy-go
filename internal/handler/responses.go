@@ -9,6 +9,7 @@ import (
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
+	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
 // Responses handles POST /responses and /v1/responses — OpenAI Responses API passthrough.
@@ -34,14 +35,25 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	modelID, _ := payload["model"].(string)
-	if resolved := ResolveCopilotModel(modelID); resolved != modelID {
-		modelID = resolved
-		payload["model"] = resolved
+	var model *state.Model
+	if h.directAnthropic != nil {
+		model = h.directAnthropic.FindModel(ResolveAnthropicModel(modelID))
+	}
+	direct := model != nil
+	if direct {
+		modelID = model.ID
+		payload["model"] = modelID
+		w.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
+	} else {
+		if resolved := ResolveCopilotModel(modelID); resolved != modelID {
+			modelID = resolved
+			payload["model"] = resolved
+		}
+		model = h.state.FindModel(modelID)
 	}
 	rec.Model = modelID
 	rec.RoutedModel = modelID
 
-	model := h.state.FindModel(modelID)
 	if model == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -53,6 +65,24 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if direct {
+		var speed, inferenceGeo string
+		for key, dst := range map[string]*string{"speed": &speed, "inference_geo": &inferenceGeo} {
+			if value, ok := payload[key]; ok && value != nil {
+				text, ok := value.(string)
+				if !ok {
+					api.ForwardError(w, api.InvalidRequest(key+" must be a string", nil))
+					return
+				}
+				*dst = text
+			}
+		}
+		if !h.admitAnthropicBudget(w, tracked, model, speed, inferenceGeo) {
+			return
+		}
+		h.responsesViaMessages(w, r, payload, modelID, model, rec, true)
+		return
+	}
 	backend := "responses"
 	if !isResponsesSupported(model) {
 		backend = messagesBackend(model)
@@ -61,9 +91,10 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isResponsesSupported(model) {
-		h.responsesViaMessages(w, r, payload, modelID, model, rec)
+		h.responsesViaMessages(w, r, payload, modelID, model, rec, false)
 		return
 	}
+	w.Header().Set("X-Copilot-Proxy-Upstream", "copilot")
 
 	if tools, ok := payload["tools"].([]any); ok {
 		if h.config.Snapshot().UseFunctionApplyPatch {

@@ -30,6 +30,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		r = tracked.trackRetries(r)
 	}
 	w = tracked.Writer
+	w.Header().Set("X-Copilot-Proxy-Upstream", "copilot")
 	rec := tracked.Record
 	rec.Backend = "chat_completions"
 	rec.RequestType = "normal"

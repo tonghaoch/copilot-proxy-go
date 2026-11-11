@@ -11,7 +11,7 @@ type RequestRecord struct {
 	Endpoint            string    `json:"endpoint"`     // messages, chat_completions, responses, embeddings
 	Model               string    `json:"model"`        // original model requested
 	RoutedModel         string    `json:"routed_model"` // after small-model routing
-	Backend             string    `json:"backend"`      // messages, responses, chat_completions
+	Backend             string    `json:"backend"`      // anthropic, messages, responses, chat_completions
 	RequestType         string    `json:"request_type"` // normal, compact, warmup
 	Initiator           string    `json:"initiator"`    // user, agent
 	HasVision           bool      `json:"has_vision"`
@@ -27,15 +27,33 @@ type RequestRecord struct {
 	StatusCode          int       `json:"status_code"`
 	Error               string    `json:"error,omitempty"`
 
-	UpstreamAttempted      bool  `json:"-"`
-	UpstreamRejected       bool  `json:"-"`
-	UncertainRetries       int64 `json:"-"`
-	InputUsageKnown        bool  `json:"-"`
-	OutputUsageKnown       bool  `json:"-"`
-	CacheWrite5mTokens     int64 `json:"cache_write_5m_tokens,omitempty"`
-	CacheWrite1hTokens     int64 `json:"cache_write_1h_tokens,omitempty"`
-	CacheWriteDetailsKnown bool  `json:"cache_write_details_known,omitempty"`
-	CacheWriteUsageKnown   bool  `json:"-"`
+	UpstreamAttempted      bool                  `json:"-"`
+	UpstreamRejected       bool                  `json:"-"`
+	UncertainRetries       int64                 `json:"-"`
+	InputUsageKnown        bool                  `json:"-"`
+	OutputUsageKnown       bool                  `json:"-"`
+	CacheWrite5mTokens     int64                 `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens     int64                 `json:"cache_write_1h_tokens,omitempty"`
+	CacheWriteDetailsKnown bool                  `json:"cache_write_details_known,omitempty"`
+	CacheWriteUsageKnown   bool                  `json:"-"`
+	UsageIterations        []TokenUsageIteration `json:"-"`
+	MultiIterationRisk     bool                  `json:"-"`
+	RequireIterations      bool                  `json:"-"`
+	UsageAccountingError   string                `json:"-"`
+}
+
+// TokenUsageIteration holds a single Anthropic sampling or compaction charge.
+type TokenUsageIteration struct {
+	Type                   string
+	InputTokens            int64
+	OutputTokens           int64
+	CachedTokens           int64
+	CacheCreationTokens    int64
+	CacheWrite5mTokens     int64
+	CacheWrite1hTokens     int64
+	InputUsageKnown        bool
+	OutputUsageKnown       bool
+	CacheWriteDetailsKnown bool
 }
 
 // ClaudeMDFile represents an extracted CLAUDE.md file from the system prompt.

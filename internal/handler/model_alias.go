@@ -76,6 +76,18 @@ func ModelFlavours(m state.Model) []ModelFlavour {
 	return []ModelFlavour{{ID: base, ContextWindow: promptBudget(limits)}}
 }
 
+// MergeProviderModels lists direct models first, so advertised limits match routing.
+func MergeProviderModels(copilot, direct []state.Model) []state.Model {
+	merged := make([]state.Model, 0, len(copilot)+len(direct))
+	for _, m := range direct {
+		if priced, err := state.AnthropicBudgetModel(&m, "", ""); err == nil {
+			m = *priced
+		}
+		merged = append(merged, m)
+	}
+	return append(merged, copilot...)
+}
+
 // promptBudget prefers max_prompt_tokens, the input a client may send.
 func promptBudget(l state.ModelLimits) int {
 	if l.MaxPromptTokens > 0 {
@@ -118,6 +130,16 @@ func ResolveCopilotModel(model string) string {
 	model = strings.TrimSuffix(model, claudeLongSuffix)
 	model = strings.TrimSuffix(model, otherLongSuffix)
 	return dashVersionToDot(model)
+}
+
+// ResolveAnthropicModel converts a Copilot or client model ID to the direct API form.
+func ResolveAnthropicModel(model string) string {
+	model = strings.TrimSuffix(model, claudeLongSuffix)
+	model = strings.TrimSuffix(model, otherLongSuffix)
+	if match := claudeDotRe.FindStringSubmatch(model); match != nil {
+		return dottedToDashed(match)
+	}
+	return model
 }
 
 // resolveAvailableClaudeMajor handles clients that request a major-only

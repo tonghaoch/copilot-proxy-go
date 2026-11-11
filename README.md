@@ -25,9 +25,10 @@ copilot-proxy-go is a local Go proxy that turns your GitHub Copilot subscription
 
 - **Claude Code ready** — interactive model selection and environment generation with `--claude-code`
 - **Codex CLI ready** — generates a Responses API configuration with `--codex`
-- **VPN/proxy friendly** — use `start --proxy-env` to route GitHub/Copilot requests through `HTTP_PROXY` / `HTTPS_PROXY` (or their lowercase equivalents)
+- **VPN/proxy friendly** — use `start --proxy-env` to route upstream requests through `HTTP_PROXY` / `HTTPS_PROXY` (or their lowercase equivalents)
 - **OpenAI + Anthropic compatible** — supports Chat Completions, Responses, Messages, and Embeddings
 - **Copilot-backed** — uses your GitHub Copilot account as the backend model provider
+- **Optional direct Anthropic API** — prefer your own Anthropic API key for supported Claude models
 - **Token management** — GitHub OAuth device-code flow with automatic Copilot token refresh
 
 ## Quick Start
@@ -76,7 +77,7 @@ The setup flags print a client launch command and try to copy it to your clipboa
 
 ### Behind a VPN or proxy
 
-If GitHub or Copilot requires a proxy in your network, export your proxy variables and start with `--proxy-env`:
+If an upstream provider requires a proxy in your network, export your proxy variables and start with `--proxy-env`:
 
 ```bash
 export https_proxy=http://127.0.0.1:7890
@@ -168,6 +169,20 @@ API-key authentication is disabled when `auth.apiKeys` is empty. To enable it, s
 
 Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS via a reverse proxy for access over untrusted networks. Authentication covers the dashboard and utility endpoints too; only `GET /` and `OPTIONS` requests bypass it. Without configured keys, `/token` is additionally restricted to loopback clients.
 
+### Direct Anthropic API
+
+Set `ANTHROPIC_API_KEY` **in the proxy process** to prefer the first-party Anthropic API for models in that key's Anthropic catalog. For a key that can access multiple workspaces, also set `ANTHROPIC_WORKSPACE_ID`; this takes precedence over client workspace headers. For example, in Bash:
+
+```bash
+read -r -s -p 'Anthropic API key: ' ANTHROPIC_API_KEY; printf '\n'
+export ANTHROPIC_API_KEY
+./copilot-proxy-go start --budget-usd 200 --force-cache-ttl 1h
+```
+
+The key is not a proxy-client authentication key and is not written to the configuration file. Keep it out of command history and replace it if exposed. GitHub authentication is still needed for the Copilot-backed endpoints.
+
+Supported models use Anthropic directly for `/v1/messages`, `/v1/messages/count_tokens`, and `/responses` translated to Messages; other models, Chat Completions, and Embeddings continue to use Copilot. On these routed endpoints, the response header `X-Copilot-Proxy-Upstream` identifies the selected provider. Direct-provider errors, including exhausted Anthropic credits, are returned to the caller rather than silently switching providers. Unset the key and restart to use Copilot for those models again.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -190,9 +205,9 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 ./copilot-proxy-go start --budget-usd 200
 ```
 
-The budget estimates **this process's** token usage from Copilot's per-model prices and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. If usage is incomplete, or an earlier retry may have reached inference without reporting usage, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` and the dashboard distinguish the reported-usage estimate from the reserve for uncertain usage; both count toward the limit. A restored amount is treated as reported usage unless its reserved portion is supplied separately.
+The budget estimates **this process's** token usage from Copilot's per-model prices or the built-in first-party Anthropic rates and reported input, output, cache-read, and cache-write tokens. It uses long-context prices above the model's threshold and conservative cache-write pricing when a write's TTL is unknown. Compaction iterations are priced separately so their usage is not missed or charged at the wrong context tier. If usage is incomplete, or an earlier retry may have reached inference without reporting usage, it reserves a conservative estimate using the model's token limits and highest applicable prices when those bounds are available. Streaming Chat Completions request a final usage report. `/api/stats` and the dashboard distinguish the reported-usage estimate from the reserve for uncertain usage; both count toward the limit. A restored amount is treated as reported usage unless its reserved portion is supplied separately.
 
-This is **not a guaranteed GitHub spending cap or invoice**. Existing GitHub usage, plan allowances, discounts, and charges outside this process are not included, and retry reserves may exceed actual charges. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; incomplete usage with no reliable bound (including an unknown embeddings batch) pauses further model requests rather than silently undercounting. Health and status endpoints remain available.
+This is **not a guaranteed GitHub or Anthropic spending cap or invoice**. Existing usage, plan allowances, discounts, server-tool fees, taxes, and charges outside this process are not included, and retry reserves may exceed actual charges. Anthropic prices are maintained in the proxy and can become stale; the Anthropic Models API does not provide pricing. Requests already admitted can finish and exceed the limit. Missing model pricing rejects that request; direct Anthropic models also require reported input and output limits. Incomplete usage with no reliable bound (including interrupted multi-iteration requests and unknown embeddings batches) pauses further model requests rather than silently undercounting. When budgeting is enabled, server-side model fallbacks and advisor tools are rejected because their additional models cannot yet be priced safely. Health and status endpoints remain available.
 
 Restarting normally resets the estimate. To carry it forward, note `estimated_spent_usd` and `reserved_usd` from `/api/stats` after in-flight requests finish (or from the final budget log after a graceful shutdown), then start with, for example, `--budget-usd 200 --budget-spent-usd 42.50 --budget-reserved-usd 10`. The reserve is part of the restored total, not added to it. Include a conservative reserve for any prior requests whose cost was unknown. The restored values are estimates, not persistent billing reconciliation.
 

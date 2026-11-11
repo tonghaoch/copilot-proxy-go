@@ -44,6 +44,7 @@ func (t *trackedRequest) Finish() {
 		}
 		t.budget.Complete(t.admission, *t.Record)
 	}
+	t.Record.UsageIterations = nil
 	t.metrics.RecordRequest(*t.Record)
 }
 
@@ -68,6 +69,21 @@ func (h *Handler) admitBudget(w http.ResponseWriter, tracked *trackedRequest, mo
 	}
 	tracked.budget, tracked.admission = h.budget, admission
 	return true
+}
+
+func (h *Handler) admitAnthropicBudget(w http.ResponseWriter, tracked *trackedRequest, model *state.Model, speed, inferenceGeo string) bool {
+	if h.budget == nil {
+		return true
+	}
+	priced, err := state.AnthropicBudgetModel(model, speed, inferenceGeo)
+	if err != nil {
+		api.ForwardError(w, &api.HTTPError{
+			StatusCode: http.StatusServiceUnavailable,
+			Message:    "token budget accounting unavailable: " + err.Error(),
+		})
+		return false
+	}
+	return h.admitBudget(w, tracked, priced, "anthropic")
 }
 
 func markUpstreamFailure(rec *state.RequestRecord, err error) {

@@ -118,6 +118,21 @@ func startCmd() *cobra.Command {
 			state.Global.SetModels(models)
 			slog.Info("models loaded", "count", len(models))
 
+			var directAnthropic *service.AnthropicClient
+			if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+				directAnthropic, err = service.NewAnthropicClient(api.HTTPClient(), key, os.Getenv("ANTHROPIC_WORKSPACE_ID"))
+				if err != nil {
+					return fmt.Errorf("configuring direct Anthropic API: %w", err)
+				}
+				ctx, cancel := context.WithTimeout(appCtx, 30*time.Second)
+				err = directAnthropic.RefreshModels(ctx)
+				cancel()
+				if err != nil {
+					return fmt.Errorf("loading direct Anthropic models: %w", err)
+				}
+				slog.Info("direct Anthropic API enabled", "models", len(directAnthropic.Models()))
+			}
+
 			// Admins can change which models are enabled at any time, so keep the
 			// cache fresh. A failed refresh keeps the previous list.
 			// ponytail: fixed 10m poll, no ETag; add conditional fetch if Copilot rate-limits it.
@@ -132,21 +147,33 @@ func startCmd() *cobra.Command {
 						fresh, err := copilotClient.FetchModels(appCtx)
 						if err != nil {
 							slog.Warn("model refresh failed, keeping cached list", "error", err)
-							continue
+						} else {
+							state.Global.SetModels(fresh)
+							slog.Debug("models refreshed", "count", len(fresh))
 						}
-						state.Global.SetModels(fresh)
-						slog.Debug("models refreshed", "count", len(fresh))
+						if directAnthropic != nil {
+							ctx, cancel := context.WithTimeout(appCtx, 30*time.Second)
+							err := directAnthropic.RefreshModels(ctx)
+							cancel()
+							if err != nil {
+								slog.Warn("Anthropic model refresh failed, keeping cached list", "error", err)
+							}
+						}
 					}
 				}
 			}()
 
+			setupModels := models
+			if directAnthropic != nil {
+				setupModels = handler.MergeProviderModels(models, directAnthropic.Models())
+			}
 			if claudeCode {
-				if err := runClaudeCodeSetup(port, models); err != nil {
+				if err := runClaudeCodeSetup(port, setupModels); err != nil {
 					slog.Warn("claude-code setup failed", "error", err)
 				}
 			}
 			if codex {
-				if err := runCodexSetup(port, models); err != nil {
+				if err := runCodexSetup(port, setupModels); err != nil {
 					slog.Warn("codex setup failed", "error", err)
 				}
 			}
@@ -163,10 +190,14 @@ func startCmd() *cobra.Command {
 			}
 			fmt.Println()
 
-			endpoints := handler.New(handler.Dependencies{
+			deps := handler.Dependencies{
 				State: state.Global, Metrics: state.Metrics, Budget: budget, Copilot: copilotClient, HTTP: api.HTTPClient(),
 				ForceCacheTTL: forceCacheTTL,
-			})
+			}
+			if directAnthropic != nil {
+				deps.DirectAnthropic = directAnthropic
+			}
+			endpoints := handler.New(deps)
 			srv := server.NewWithHandler(server.Options{
 				Host: host,
 				Port: port,
