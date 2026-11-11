@@ -1,17 +1,25 @@
 package handler
 
+import "encoding/json"
+
 // --- Chat Completions Request (what we send to Copilot) ---
 
 type ChatCompletionRequest struct {
-	Model       string       `json:"model"`
-	Messages    []OpenAIMsg  `json:"messages"`
-	MaxTokens   *int         `json:"max_tokens,omitempty"`
-	Temperature *float64     `json:"temperature,omitempty"`
-	TopP        *float64     `json:"top_p,omitempty"`
-	Stream      bool         `json:"stream"`
-	Tools       []OpenAITool `json:"tools,omitempty"`
-	ToolChoice  any          `json:"tool_choice,omitempty"`
-	Stop        any          `json:"stop,omitempty"`
+	Model           string             `json:"model"`
+	Messages        []OpenAIMsg        `json:"messages"`
+	MaxTokens       *int               `json:"max_tokens,omitempty"`
+	Temperature     *float64           `json:"temperature,omitempty"`
+	TopP            *float64           `json:"top_p,omitempty"`
+	Stream          bool               `json:"stream"`
+	StreamOptions   *ChatStreamOptions `json:"stream_options,omitempty"`
+	Tools           []OpenAITool       `json:"tools,omitempty"`
+	ToolChoice      any                `json:"tool_choice,omitempty"`
+	Stop            any                `json:"stop,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+}
+
+type ChatStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type OpenAIMsg struct {
@@ -83,11 +91,54 @@ type ChatCompletionM struct {
 type ChatCompletionUsage struct {
 	PromptTokens        int                  `json:"prompt_tokens"`
 	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens,omitempty"`
 	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	inputKnown          bool
+	outputKnown         bool
+}
+
+func (u *ChatCompletionUsage) UnmarshalJSON(data []byte) error {
+	type wire ChatCompletionUsage
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var fields struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*u = ChatCompletionUsage(value)
+	u.inputKnown, u.outputKnown = fields.PromptTokens != nil, fields.CompletionTokens != nil
+	return nil
+}
+
+// toAnthropic converts to Anthropic convention, where input_tokens excludes
+// cached tokens. Gemini reports reasoning outside completion_tokens (a
+// top-level reasoning_tokens) but counts it in total_tokens, so output is
+// taken from total-prompt when that is larger.
+func (u *ChatCompletionUsage) toAnthropic() AnthropicUsage {
+	cached := 0
+	writes := 0
+	if u.PromptTokensDetails != nil {
+		cached = u.PromptTokensDetails.CachedTokens
+		if u.PromptTokensDetails.CacheWriteTokens != nil {
+			writes = *u.PromptTokensDetails.CacheWriteTokens
+		}
+	}
+	return AnthropicUsage{
+		InputTokens:              u.PromptTokens - cached - writes,
+		OutputTokens:             max(u.CompletionTokens, u.TotalTokens-u.PromptTokens),
+		CacheReadInputTokens:     cached,
+		CacheCreationInputTokens: writes,
+	}
 }
 
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens     int  `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // --- Chat Completions Streaming Chunk ---

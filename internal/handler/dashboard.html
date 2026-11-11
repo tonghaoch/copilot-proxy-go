@@ -466,6 +466,7 @@
   .badge-normal { background: rgba(255,255,255,0.06); color: var(--fg-dim); }
   .badge-enabled { background: rgba(74,222,128,0.15); color: var(--green); }
   .badge-disabled { background: rgba(255,255,255,0.06); color: var(--fg-muted); }
+  .badge-error { background: rgba(248,113,113,0.15); color: var(--red); }
   .badge-feature { background: rgba(167,139,250,0.1); color: var(--purple); font-size: 0.7rem; margin: 0.15rem; }
 
   /* -- Session Intelligence -- */
@@ -865,6 +866,12 @@ function render() {
   // Stats Bar
   html += renderStatsBar();
 
+  // Estimated token budget
+  html += renderBudgetCard();
+
+  // Usage by upstream provider
+  html += renderProviderCard();
+
   // Plan Overview
   html += renderPlanCard();
 
@@ -919,31 +926,80 @@ function renderStatsBar() {
 
   const uptime = formatUptime(statsData.uptime_seconds || 0);
   const totalReqs = formatNumber(statsData.total_requests || 0);
-  const inputTok = formatTokens(statsData.tokens ? statsData.tokens.input : 0);
-  const outputTok = formatTokens(statsData.tokens ? statsData.tokens.output : 0);
-  const cached = statsData.tokens ? statsData.tokens.cached : 0;
-  const totalInput = statsData.tokens ? statsData.tokens.input : 0;
-  const total = cached + totalInput;
-  const cacheRate = total > 0 ? Math.round((cached / total) * 100) : 0;
+  const tokens = statsData.tokens || {};
+  const uncached = tokens.input || 0;
+  const cached = tokens.cached || 0;
+  const cacheCreated = tokens.cache_creation || 0;
+  const totalInput = uncached + cached + cacheCreated;
+  const cacheRate = totalInput > 0 ? Math.round((cached / totalInput) * 100) : 0;
 
-  let html = '<div class="stats-bar">';
+  let html = '<div class="card-label">Proxy metrics (since restart)</div><div class="stats-bar">';
   html += renderStatChip(totalReqs, 'Requests');
-  html += renderStatChip(inputTok, 'Input Tokens');
-  html += renderStatChip(outputTok, 'Output Tokens');
+  html += renderStatChip(formatTokens(totalInput), 'Total Input (incl. cache)', totalInput.toLocaleString());
+  html += renderStatChip(formatTokens(uncached), 'Uncached Input', uncached.toLocaleString());
+  html += renderStatChip(formatTokens(cached), 'Cache Reads', cached.toLocaleString());
+  html += renderStatChip(formatTokens(cacheCreated), 'Cache Writes', cacheCreated.toLocaleString());
+  html += renderStatChip(formatTokens(tokens.cache_creation_1h || 0), '1h Writes Reported');
+  html += renderStatChip(formatTokens(tokens.cache_creation_5m || 0), '5m Writes Reported');
+  html += renderStatChip(formatTokens(tokens.output || 0), 'Output Tokens');
   html += renderStatChip(cacheRate + '%', 'Cache Hit Rate');
   html += renderStatChip(uptime, 'Uptime');
   html += '</div>';
   return html;
 }
 
-function renderStatChip(value, label) {
-  return '<div class="stat-chip"><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+function renderStatChip(value, label, detail) {
+  const title = detail ? ' title="' + escapeHtml(detail) + '"' : '';
+  return '<div class="stat-chip"' + title + '><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+}
+
+function renderBudgetCard() {
+  if (!statsData || !statsData.budget) return '';
+  const budget = statsData.budget;
+  const money = n => '$' + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 4});
+  let html = '<div class="card"><div class="card-label">Estimated token budget</div>';
+  html += '<div class="plan-row"><strong>' + money(budget.estimated_spent_usd) + ' / ' + money(budget.limit_usd) + '</strong>';
+  html += '<span>' + money(budget.remaining_usd) + ' remaining</span>';
+  html += '<span class="badge ' + (budget.blocked ? 'badge-error' : 'badge-feature') + '">' + (budget.blocked ? 'Blocked' : 'Accepting') + '</span></div>';
+  if (budget.reported_usage_usd != null && budget.reserved_usd != null) {
+    html += '<div style="font-size:0.8rem;color:var(--fg-dim);margin-top:0.5rem">Reported usage estimate: ' + money(budget.reported_usage_usd) + '; uncertain usage reserve: ' + money(budget.reserved_usd) + '.</div>';
+  }
+  html += '<div style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.5rem">Estimate, not a GitHub invoice. ';
+  html += formatNumber(budget.in_flight || 0) + ' in flight; ' + formatNumber(budget.conservative_estimates || 0) + ' conservative estimates.</div>';
+  if (budget.reason) html += '<div style="font-size:0.8rem;color:var(--red)">' + escapeHtml(budget.reason) + '</div>';
+  return html + '</div>';
+}
+
+function renderProviderCard() {
+  if (!statsData || !statsData.config || !statsData.config.direct_anthropic) return '';
+  const providers = statsData.providers || {};
+  const spent = (statsData.budget && statsData.budget.provider_spent_usd) || {};
+  const money = n => '$' + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 4});
+  let html = '<div class="card"><div class="card-label">Usage by provider</div>';
+  html += '<table class="activity-table"><thead><tr><th>Provider</th><th>Requests</th><th>Errors</th><th>Input / Output</th><th>Cache read / write</th>';
+  if (statsData.budget) html += '<th>Est. spend</th>';
+  html += '</tr></thead><tbody>';
+  for (const name of ['anthropic', 'copilot']) {
+    const p = providers[name] || {};
+    html += '<tr><td><strong>' + (name === 'anthropic' ? 'Anthropic API' : 'Copilot') + '</strong></td>';
+    html += '<td>' + formatNumber(p.requests || 0) + '</td><td>' + formatNumber(p.errors || 0) + '</td>';
+    html += '<td>' + formatNumber((p.input_tokens || 0) + (p.cached_tokens || 0) + (p.cache_creation_tokens || 0)) + ' / ' + formatNumber(p.output_tokens || 0) + '</td>';
+    html += '<td>' + formatNumber(p.cached_tokens || 0) + ' / ' + formatNumber(p.cache_creation_tokens || 0) + '</td>';
+    if (statsData.budget) html += '<td>' + money(spent[name] || 0) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  const fallback = statsData.config.anthropic_fallback;
+  html += '<div style="font-size:0.8rem;margin-top:0.5rem;color:' + ((statsData.fallback_count || 0) > 0 ? 'var(--yellow)' : 'var(--fg-dim)') + '">';
+  html += 'Copilot fallback ' + (fallback ? 'enabled' : 'disabled') + '; ' + formatNumber(statsData.fallback_count || 0) + ' request(s) fell back.</div>';
+  html += '<div style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.25rem">Spend split covers this process only; restored spend is not attributed.</div>';
+  return html + '</div>';
 }
 
 // -- Plan Card --
 function renderPlanCard() {
   if (!usageData) return '';
-  let html = '<div class="card"><div class="card-label">Plan Overview</div><div class="plan-row">';
+  let html = '<div class="card"><div class="card-label">GitHub Plan and Quota</div><div class="plan-row">';
 
   if (usageData.copilot_plan) {
     html += '<span class="plan-badge">' + escapeHtml(usageData.copilot_plan) + '</span>';
@@ -1170,7 +1226,7 @@ function renderActivityFeed() {
   html += '<div class="collapsible-body open">';
   html += '<div class="activity-scroll">';
   html += '<table class="activity-table"><thead><tr>';
-  html += '<th>Time</th><th>Model</th><th>Backend</th><th>Type</th><th>Who</th><th>Tokens</th><th>Latency</th>';
+  html += '<th>Time</th><th>Model</th><th>Backend</th><th>Type</th><th>Who</th><th>Input / Output</th><th>Latency</th>';
   html += '</tr></thead><tbody>';
 
   for (const r of statsData.recent) {
@@ -1178,18 +1234,23 @@ function renderActivityFeed() {
     const model = r.routed_model || r.model || '';
     const shortModel = model.length > 24 ? model.substring(0, 22) + '..' : model;
     const backend = r.backend || '';
+    const fellBack = r.fallback ? ' <span class="badge badge-error" title="' + escapeHtml(r.fallback) + '">fallback</span>' : '';
     const reqType = r.request_type || '';
     const who = r.initiator || '';
-    const tokens = formatNumber(r.input_tokens || 0) + ' / ' + formatNumber(r.output_tokens || 0);
+    const uncached = r.input_tokens || 0;
+    const cached = r.cached_tokens || 0;
+    const created = r.cache_creation_tokens || 0;
+    const tokens = (uncached + cached + created).toLocaleString() + ' / ' + (r.output_tokens || 0).toLocaleString();
+    const tokenDetail = 'Uncached: ' + uncached.toLocaleString() + '; cache read: ' + cached.toLocaleString() + '; cache write: ' + created.toLocaleString();
     const latency = r.latency_ms ? r.latency_ms + 'ms' : '';
 
     html += '<tr>';
     html += '<td>' + escapeHtml(ts) + '</td>';
     html += '<td><span class="model-id">' + escapeHtml(shortModel) + '</span></td>';
-    html += '<td><span class="badge badge-' + escapeHtml(backend) + '">' + escapeHtml(backend) + '</span></td>';
+    html += '<td><span class="badge badge-' + escapeHtml(backend) + '">' + escapeHtml(backend) + '</span>' + fellBack + '</td>';
     html += '<td><span class="badge badge-' + escapeHtml(reqType) + '">' + escapeHtml(reqType) + '</span></td>';
     html += '<td>' + (who === 'agent' ? '&#x1f916;' : '&#x1f464;') + '</td>';
-    html += '<td style="font-variant-numeric:tabular-nums">' + tokens + '</td>';
+    html += '<td title="' + escapeHtml(tokenDetail) + '" style="font-variant-numeric:tabular-nums">' + tokens + '</td>';
     html += '<td style="font-variant-numeric:tabular-nums">' + latency + '</td>';
     html += '</tr>';
   }
@@ -1225,7 +1286,8 @@ function renderDistributionCharts() {
     const backendColors = {
       'messages': 'var(--accent)',
       'responses': 'var(--purple)',
-      'chat_completions': 'var(--green)'
+      'chat_completions': 'var(--green)',
+      'anthropic': 'var(--orange)'
     };
     html += renderBarChartWithColors(statsData.backend_counts, backendColors);
   } else {
@@ -1290,6 +1352,7 @@ function renderProxyConfig() {
   html += configItem('VS Code Version', c.vs_code_version || 'unknown');
   html += configItem('Small Model', c.small_model || 'gpt-5-mini');
   html += configItem('Compact -> Small', c.compact_use_small_model ? 'Yes' : 'No');
+  html += configItem('Cache TTL', c.force_cache_ttl ? c.force_cache_ttl + ' (forced)' : (c.cache_ttl || 'client default'));
   html += configItem('Auth', c.auth_enabled ? 'Enabled (' + c.api_key_count + ' keys)' : 'Disabled');
 
   html += '</div>';

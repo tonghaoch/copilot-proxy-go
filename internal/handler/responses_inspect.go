@@ -11,11 +11,17 @@ func containsImageRecursive(items []any) bool {
 		if !ok {
 			continue
 		}
-		if t, _ := m["type"].(string); t == "input_image" {
+		t, _ := m["type"].(string)
+		if t == "input_image" {
 			return true
 		}
 		if content, ok := m["content"].([]any); ok && containsImageRecursive(content) {
 			return true
+		}
+		if t == "function_call_output" || t == "custom_tool_call_output" {
+			if output, ok := m["output"].([]any); ok && containsImageRecursive(output) {
+				return true
+			}
 		}
 	}
 	return false

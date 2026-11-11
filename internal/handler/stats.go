@@ -10,21 +10,27 @@ import (
 
 // statsResponse is the JSON response for GET /api/stats.
 type statsResponse struct {
-	UptimeSeconds int64                 `json:"uptime_seconds"`
-	TotalRequests int64                 `json:"total_requests"`
-	Tokens        statsTokens           `json:"tokens"`
-	ModelCounts   map[string]int64      `json:"model_counts"`
-	BackendCounts map[string]int64      `json:"backend_counts"`
-	TypeCounts    map[string]int64      `json:"type_counts"`
-	Session       *statsSession         `json:"session"`
-	Recent        []state.RequestRecord `json:"recent"`
-	Config        statsConfig           `json:"config"`
+	UptimeSeconds int64                          `json:"uptime_seconds"`
+	TotalRequests int64                          `json:"total_requests"`
+	Tokens        statsTokens                    `json:"tokens"`
+	ModelCounts   map[string]int64               `json:"model_counts"`
+	BackendCounts map[string]int64               `json:"backend_counts"`
+	TypeCounts    map[string]int64               `json:"type_counts"`
+	Providers     map[string]state.ProviderUsage `json:"providers"`
+	FallbackCount int64                          `json:"fallback_count"`
+	Session       *statsSession                  `json:"session"`
+	Recent        []state.RequestRecord          `json:"recent"`
+	Config        statsConfig                    `json:"config"`
+	Budget        *state.BudgetSnapshot          `json:"budget,omitempty"`
 }
 
 type statsTokens struct {
-	Input  int64 `json:"input"`
-	Output int64 `json:"output"`
-	Cached int64 `json:"cached"`
+	Input           int64 `json:"input"`
+	Output          int64 `json:"output"`
+	Cached          int64 `json:"cached"`
+	CacheCreation   int64 `json:"cache_creation"`
+	CacheCreation5m int64 `json:"cache_creation_5m"`
+	CacheCreation1h int64 `json:"cache_creation_1h"`
 }
 
 type statsSession struct {
@@ -52,6 +58,10 @@ type statsConfig struct {
 	ReasoningEfforts     map[string]string `json:"reasoning_efforts"`
 	AuthEnabled          bool              `json:"auth_enabled"`
 	APIKeyCount          int               `json:"api_key_count"`
+	CacheTTL             string            `json:"cache_ttl"`
+	ForceCacheTTL        string            `json:"force_cache_ttl,omitempty"`
+	DirectAnthropic      bool              `json:"direct_anthropic"`
+	AnthropicFallback    bool              `json:"anthropic_fallback"`
 }
 
 // Stats handles GET /api/stats — returns all dashboard metrics as JSON.
@@ -93,13 +103,18 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds: int64(time.Since(snap.Aggregates.StartTime).Seconds()),
 		TotalRequests: snap.Aggregates.TotalRequests,
 		Tokens: statsTokens{
-			Input:  snap.Aggregates.TotalInputTokens,
-			Output: snap.Aggregates.TotalOutputTokens,
-			Cached: snap.Aggregates.TotalCachedTokens,
+			Input:           snap.Aggregates.TotalInputTokens,
+			Output:          snap.Aggregates.TotalOutputTokens,
+			Cached:          snap.Aggregates.TotalCachedTokens,
+			CacheCreation:   snap.Aggregates.TotalCacheCreationTokens,
+			CacheCreation5m: snap.Aggregates.TotalCacheWrite5mTokens,
+			CacheCreation1h: snap.Aggregates.TotalCacheWrite1hTokens,
 		},
 		ModelCounts:   snap.Aggregates.ModelCounts,
 		BackendCounts: snap.Aggregates.BackendCounts,
 		TypeCounts:    snap.Aggregates.TypeCounts,
+		Providers:     snap.Aggregates.Providers,
+		FallbackCount: snap.Aggregates.FallbackCount,
 		Session:       session,
 		Recent:        recent,
 		Config: statsConfig{
@@ -110,7 +125,15 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 			ReasoningEfforts:     cfg.ModelReasoningEfforts,
 			AuthEnabled:          len(apiKeys) > 0,
 			APIKeyCount:          len(apiKeys),
+			CacheTTL:             cfg.EffectiveCacheTTL(),
+			ForceCacheTTL:        h.forceCacheTTL,
+			DirectAnthropic:      h.directAnthropic != nil,
+			AnthropicFallback:    h.directAnthropic != nil && h.anthropicFallback,
 		},
+	}
+	if h.budget != nil {
+		budget := h.budget.Snapshot()
+		resp.Budget = &budget
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/config"
@@ -170,5 +171,98 @@ func TestEffortFromThinkingBudget(t *testing.T) {
 		if got := effortFromThinkingBudget(tt.budget); got != tt.want {
 			t.Errorf("effortFromThinkingBudget(%d) = %q, want %q", tt.budget, got, tt.want)
 		}
+	}
+}
+
+func TestThinkingRewriteHeader(t *testing.T) {
+	enabled := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "enabled", BudgetTokens: 1024}}
+	payload := map[string]any{"thinking": map[string]string{"type": "adaptive"}}
+	if got := thinkingRewriteHeader(enabled, payload); got != "enabled-rewritten-to-adaptive" {
+		t.Fatalf("enabled->adaptive header = %q", got)
+	}
+
+	adaptive := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "adaptive"}}
+	if got := thinkingRewriteHeader(adaptive, payload); got != "" {
+		t.Fatalf("client-sent adaptive should not be flagged, got %q", got)
+	}
+
+	disabled := &AnthropicRequest{Thinking: &ThinkingConfig{Type: "disabled"}}
+	if got := thinkingRewriteHeader(disabled, map[string]any{}); got != "" {
+		t.Fatalf("disabled should not be flagged, got %q", got)
+	}
+}
+
+func TestApplyCacheTTL(t *testing.T) {
+	parse := func(s string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	bare := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}`)
+	applyCacheTTL(bare, "1h")
+	out, _ := json.Marshal(bare)
+	if got := strings.Count(string(out), `"ttl":"1h"`); got != 2 {
+		t.Fatalf("want both breakpoints at 1h, got %s", out)
+	}
+
+	mixed := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}`)
+	applyCacheTTL(mixed, "1h")
+	out, _ = json.Marshal(mixed)
+	if strings.Count(string(out), `"ttl"`) != 1 {
+		t.Fatalf("explicit client ttl layout must be left alone, got %s", out)
+	}
+
+	off := parse(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}]}`)
+	applyCacheTTL(off, "")
+	out, _ = json.Marshal(off)
+	if strings.Contains(string(out), "ttl") {
+		t.Fatalf("empty ttl must disable, got %s", out)
+	}
+
+	topLevel := parse(`{"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"x"}]}`)
+	applyCacheTTL(topLevel, "1h")
+	if ttl := topLevel["cache_control"].(map[string]any)["ttl"]; ttl != "1h" {
+		t.Fatalf("top-level cache ttl = %v", ttl)
+	}
+}
+
+func TestCacheControlsIgnoreToolData(t *testing.T) {
+	var payload map[string]any
+	err := json.Unmarshal([]byte(`{
+		"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],
+		"tools":[{"name":"example","input_schema":{"properties":{"cache_control":{"type":"object","ttl":"5m","scope":"keep"}}}}]
+	}`), &payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, "1h")
+	control := payload["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	schema := payload["tools"].([]any)[0].(map[string]any)["input_schema"].(map[string]any)["properties"].(map[string]any)["cache_control"].(map[string]any)
+	if control["ttl"] != "1h" || schema["ttl"] != "5m" || schema["scope"] != "keep" {
+		t.Fatalf("control = %v, tool schema = %v", control, schema)
+	}
+}
+
+func TestCacheControlsVisitNestedToolResultContent(t *testing.T) {
+	var payload map[string]any
+	err := json.Unmarshal([]byte(`{
+		"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral"}}],
+		"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a",
+			"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"5m","scope":"local"}}]}]}]
+	}`), &payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripCacheControlScope(payload)
+	applyCacheTTL(payload, "1h")
+	control := payload["system"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	tool := payload["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	nested := tool["content"].([]any)[0].(map[string]any)["cache_control"].(map[string]any)
+	if _, ok := nested["scope"]; ok || nested["ttl"] != "5m" || control["ttl"] != nil {
+		t.Fatalf("top-level control=%v, nested control=%v", control, nested)
 	}
 }

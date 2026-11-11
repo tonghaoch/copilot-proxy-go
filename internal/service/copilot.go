@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
@@ -122,7 +123,7 @@ func ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision boo
 }
 
 func (c *Client) ProxyChatCompletionEx(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(isAgent, vision, ""))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/chat/completions", body, requestHeaders(ctx, isAgent, vision, ""))
 }
 
 // ProxyMessages forwards a request to the Copilot native Messages API.
@@ -131,7 +132,12 @@ func ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, 
 }
 
 func (c *Client) ProxyMessages(ctx context.Context, body []byte, betaHeader string, vision, isAgent bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(isAgent, vision, betaHeader))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages", body, requestHeaders(ctx, isAgent, vision, betaHeader))
+}
+
+// ProxyCountTokens asks Copilot's Messages endpoint for an exact input token count.
+func (c *Client) ProxyCountTokens(ctx context.Context, body []byte, betaHeader string) (*http.Response, error) {
+	return c.doCopilotRequest(ctx, http.MethodPost, "/v1/messages/count_tokens", body, requestHeaders(ctx, false, false, betaHeader))
 }
 
 // ProxyResponses forwards a request to the Copilot Responses API.
@@ -140,7 +146,7 @@ func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*ht
 }
 
 func (c *Client) ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
-	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
+	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(ctx, isAgent, vision, ""))
 }
 
 // ProxyEmbeddings forwards a request to the Copilot Embeddings API.
@@ -152,9 +158,50 @@ func (c *Client) ProxyEmbeddings(ctx context.Context, body []byte) (*http.Respon
 	return c.doCopilotRequest(ctx, http.MethodPost, "/embeddings", body, nil)
 }
 
-func requestHeaders(isAgent, vision bool, betaHeader string) func(http.Header) {
+// interactionTypeKey carries the kind of interaction on a request context.
+type interactionTypeKey struct{}
+
+type retryTrackerKey struct{}
+
+// RetryTracker counts earlier attempts whose token usage is unknown.
+type RetryTracker struct {
+	uncertain atomic.Int64
+}
+
+func WithRetryTracker(ctx context.Context) (context.Context, *RetryTracker) {
+	tracker := &RetryTracker{}
+	return context.WithValue(ctx, retryTrackerKey{}, tracker), tracker
+}
+
+func (t *RetryTracker) Uncertain() int64 {
+	return t.uncertain.Load()
+}
+
+func recordUncertainRetry(ctx context.Context) {
+	if tracker, ok := ctx.Value(retryTrackerKey{}).(*RetryTracker); ok {
+		tracker.uncertain.Add(1)
+	}
+}
+
+// WithSubagentInteraction marks ctx as a subagent request. The official client
+// sends X-Interaction-Type: conversation-subagent for these instead of
+// conversation-agent.
+func WithSubagentInteraction(ctx context.Context) context.Context {
+	return context.WithValue(ctx, interactionTypeKey{}, api.InteractionSubagent)
+}
+
+// interactionType returns the X-Interaction-Type for a request context.
+func interactionType(ctx context.Context) string {
+	if v, ok := ctx.Value(interactionTypeKey{}).(string); ok {
+		return v
+	}
+	return api.InteractionAgent
+}
+
+func requestHeaders(ctx context.Context, isAgent, vision bool, betaHeader string) func(http.Header) {
 	return func(header http.Header) {
 		api.SetInitiatorHeader(header, isAgent)
+		header.Set("X-Interaction-Type", interactionType(ctx))
 		if vision {
 			header.Set("Copilot-Vision-Request", "true")
 		}
@@ -182,13 +229,25 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 	}
 
 	refreshedToken := false
+	priorAttemptUncertain := false
+	pendingUncertain := false
+	retriedIncompleteBody := false
+	var nextClient HTTPDoer
 	for attempt := 0; attempt < c.retry.MaxAttempts; attempt++ {
 		req, err := buildRequest()
 		if err != nil {
 			return nil, fmt.Errorf("creating upstream request: %w", err)
 		}
+		if pendingUncertain {
+			recordUncertainRetry(ctx)
+			pendingUncertain = false
+		}
 		started := time.Now()
-		resp, err := c.httpClient().Do(req)
+		client := c.httpClient()
+		if nextClient != nil {
+			client, nextClient = nextClient, nil
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			// Dropped connections are replayable (the body is rebuilt each
 			// attempt); a cancelled context is not — the caller is gone.
@@ -201,6 +260,8 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 			if waitErr := c.retry.Wait(ctx, delay); waitErr != nil {
 				return nil, fmt.Errorf("waiting to retry upstream request: %w", waitErr)
 			}
+			priorAttemptUncertain = true
+			pendingUncertain = true
 			continue
 		}
 		slog.Debug("upstream response", "method", method, "path", path, "status", resp.StatusCode,
@@ -210,16 +271,45 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 			return resp, nil
 		}
 		if isTokenExpired(resp.StatusCode) && !refreshedToken {
-			drainAndClose(resp.Body)
+			httpErr := api.NewHTTPError(resp)
+			resp.Body.Close()
+			httpErr.PriorAttemptUncertain = priorAttemptUncertain
 			refreshedToken = true
 			slog.Warn("upstream auth error; refreshing token", "path", path, "status", resp.StatusCode)
 			if c.refreshToken == nil {
-				return nil, fmt.Errorf("token refresh is not configured")
+				httpErr.Cause = fmt.Errorf("token refresh is not configured")
+				slog.Error("upstream token refresh failed", "error", httpErr.Cause)
+				return nil, httpErr
 			}
 			if err := c.refreshToken(); err != nil {
-				return nil, fmt.Errorf("token refresh failed: %w", err)
+				httpErr.Cause = fmt.Errorf("token refresh failed: %w", err)
+				slog.Error("upstream token refresh failed", "error", httpErr.Cause)
+				return nil, httpErr
 			}
 			continue
+		}
+		if resp.StatusCode == http.StatusRequestTimeout {
+			httpErr := api.NewHTTPError(resp)
+			resp.Body.Close()
+			httpErr.PriorAttemptUncertain = priorAttemptUncertain
+			if httpErr.IncompleteRequestBody() && !retriedIncompleteBody && !priorAttemptUncertain && attempt+1 < c.retry.MaxAttempts {
+				delay := retryDelay(resp, attempt, c.retry)
+				if delay <= c.retry.MaxRetryAfter {
+					retriedIncompleteBody = true
+					var ok bool
+					nextClient, ok = freshConnectionClient(c.httpClient())
+					if !ok {
+						return nil, httpErr
+					}
+					slog.Warn("retrying incomplete upstream upload", "path", path, "attempt", attempt+1, "delay", delay)
+					if err := c.retry.Wait(ctx, delay); err != nil {
+						httpErr.Cause = fmt.Errorf("waiting to retry upstream request: %w", err)
+						return nil, httpErr
+					}
+					continue
+				}
+			}
+			return nil, httpErr
 		}
 		if isRetryableStatus(resp.StatusCode) && attempt+1 < c.retry.MaxAttempts {
 			delay := retryDelay(resp, attempt, c.retry)
@@ -227,23 +317,60 @@ func (c *Client) doCopilotRequest(ctx context.Context, method, path string, body
 			if resp.StatusCode == http.StatusTooManyRequests && delay > c.retry.MaxRetryAfter {
 				httpErr := api.NewHTTPError(resp)
 				resp.Body.Close()
+				httpErr.PriorAttemptUncertain = priorAttemptUncertain
 				slog.Warn("rate limited beyond retry window; returning to caller",
 					"path", path, "retry_after", delay)
 				return nil, httpErr
 			}
-			drainAndClose(resp.Body)
+			var rejected *api.HTTPError
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				rejected = api.NewHTTPError(resp)
+				rejected.PriorAttemptUncertain = priorAttemptUncertain
+				resp.Body.Close()
+			} else {
+				drainAndClose(resp.Body)
+			}
 			slog.Warn("retrying transient upstream response", "path", path, "status", resp.StatusCode,
 				"attempt", attempt+1, "delay", delay)
 			if err := c.retry.Wait(ctx, delay); err != nil {
+				if rejected != nil {
+					rejected.Cause = fmt.Errorf("waiting to retry upstream request: %w", err)
+					return nil, rejected
+				}
 				return nil, fmt.Errorf("waiting to retry upstream request: %w", err)
+			}
+			if resp.StatusCode >= http.StatusInternalServerError {
+				priorAttemptUncertain = true
+				pendingUncertain = true
 			}
 			continue
 		}
 		httpErr := api.NewHTTPError(resp)
 		resp.Body.Close()
+		httpErr.PriorAttemptUncertain = priorAttemptUncertain
 		return nil, httpErr
 	}
 	return nil, fmt.Errorf("upstream request retry exhausted")
+}
+
+func freshConnectionClient(doer HTTPDoer) (HTTPDoer, bool) {
+	client, ok := doer.(*http.Client)
+	if !ok {
+		return nil, false
+	}
+	roundTripper := client.Transport
+	if roundTripper == nil {
+		roundTripper = http.DefaultTransport
+	}
+	transport, ok := roundTripper.(*http.Transport)
+	if !ok {
+		return nil, false
+	}
+	fresh := *client
+	freshTransport := transport.Clone()
+	freshTransport.DisableKeepAlives = true
+	fresh.Transport = freshTransport
+	return &fresh, true
 }
 
 func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {

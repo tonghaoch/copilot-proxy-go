@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 // HTTPError wraps an HTTP response error.
@@ -17,6 +18,8 @@ type HTTPError struct {
 	Body       string
 	Cause      error
 	Header     http.Header
+
+	PriorAttemptUncertain bool
 }
 
 func (e *HTTPError) Error() string {
@@ -27,6 +30,27 @@ func (e *HTTPError) Error() string {
 }
 
 func (e *HTTPError) Unwrap() error { return e.Cause }
+
+// IncompleteRequestBody reports the upstream rejection that precedes inference.
+func (e *HTTPError) IncompleteRequestBody() bool {
+	if e.StatusCode != http.StatusRequestTimeout {
+		return false
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(e.Body), &body) != nil {
+		return false
+	}
+	message := body.Error.Message
+	if message == "" {
+		message = body.Message
+	}
+	return strings.EqualFold(strings.TrimSpace(message), "Timed out reading request body. Try again, or use a smaller request size.")
+}
 
 // InvalidRequest creates a client-facing 400 error for malformed or invalid
 // request data while retaining the underlying cause for logs and inspection.

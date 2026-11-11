@@ -24,7 +24,7 @@ func (h *Handler) streamResponsesPassthrough(w http.ResponseWriter, resp *http.R
 
 	sync := NewStreamIDSync()
 	if err := h.streams.Read(resp.Body, func(eventType, data string) error {
-		captureResponsesStreamUsage(data, rec)
+		captureResponsesStreamUsage(eventType, data, rec)
 		data = sync.Process(eventType, data)
 		if eventType != "" {
 			if _, err := io.WriteString(w, "event: "+eventType+"\n"); err != nil {
@@ -42,7 +42,7 @@ func (h *Handler) streamResponsesPassthrough(w http.ResponseWriter, resp *http.R
 	}
 }
 
-func captureResponsesStreamUsage(data string, rec *state.RequestRecord) {
+func captureResponsesStreamUsage(eventType, data string, rec *state.RequestRecord) {
 	var event ResponsesStreamEvent
 	if json.Unmarshal([]byte(data), &event) != nil || len(event.Response) == 0 {
 		return
@@ -50,6 +50,10 @@ func captureResponsesStreamUsage(data string, rec *state.RequestRecord) {
 	var response ResponsesResult
 	if json.Unmarshal(event.Response, &response) == nil {
 		captureResponsesUsage(rec, response.Usage)
+		if response.Usage != nil && eventType != "response.completed" && eventType != "response.incomplete" {
+			rec.InputUsageKnown = false
+			rec.OutputUsageKnown = false
+		}
 	}
 }
 
@@ -57,9 +61,13 @@ func captureResponsesUsage(rec *state.RequestRecord, usage *ResponsesUsage) {
 	if usage == nil {
 		return
 	}
-	rec.InputTokens = int64(usage.InputTokens)
-	rec.OutputTokens = int64(usage.OutputTokens)
-	if usage.InputTokensDetails != nil {
-		rec.CachedTokens = int64(usage.InputTokensDetails.CachedTokens)
-	}
+	// Metrics use Anthropic convention: input excludes cache reads and writes.
+	u := usage.toAnthropic()
+	rec.InputTokens = int64(u.InputTokens)
+	rec.OutputTokens = int64(u.OutputTokens)
+	rec.CachedTokens = int64(u.CacheReadInputTokens)
+	rec.CacheCreationTokens = int64(u.CacheCreationInputTokens)
+	rec.CacheWriteUsageKnown = usage.InputTokensDetails != nil && usage.InputTokensDetails.CacheWriteTokens != nil
+	rec.InputUsageKnown = usage.inputKnown
+	rec.OutputUsageKnown = usage.outputKnown
 }

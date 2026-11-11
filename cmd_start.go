@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,15 +25,20 @@ import (
 
 func startCmd() *cobra.Command {
 	var (
-		host        string
-		port        int
-		githubToken string
-		accountType string
-		showToken   bool
-		verbose     bool
-		claudeCode  bool
-		codex       bool
-		proxyEnv    bool
+		host              string
+		port              int
+		githubToken       string
+		accountType       string
+		showToken         bool
+		verbose           bool
+		claudeCode        bool
+		codex             bool
+		proxyEnv          bool
+		budgetUSD         float64
+		budgetSpentUSD    float64
+		budgetReservedUSD float64
+		anthropicFallback bool
+		forceCacheTTL     string
 	)
 
 	cmd := &cobra.Command{
@@ -43,6 +49,24 @@ func startCmd() *cobra.Command {
 			defer cancelApp()
 			if claudeCode && codex {
 				return fmt.Errorf("--claude-code and --codex cannot be used together; run one setup at a time")
+			}
+			if forceCacheTTL != "" && forceCacheTTL != "5m" && forceCacheTTL != "1h" {
+				return fmt.Errorf("--force-cache-ttl must be 5m or 1h")
+			}
+			var budget *state.TokenBudget
+			if cmd.Flags().Changed("budget-usd") {
+				if cmd.Flags().Changed("budget-reserved-usd") && !cmd.Flags().Changed("budget-spent-usd") {
+					return fmt.Errorf("--budget-reserved-usd requires --budget-spent-usd")
+				}
+				var err error
+				budget, err = state.NewTokenBudgetWithRestored(budgetUSD, budgetSpentUSD, budgetReservedUSD)
+				if err != nil {
+					return fmt.Errorf("invalid token budget: %w", err)
+				}
+			} else if cmd.Flags().Changed("budget-spent-usd") {
+				return fmt.Errorf("--budget-spent-usd requires --budget-usd")
+			} else if cmd.Flags().Changed("budget-reserved-usd") {
+				return fmt.Errorf("--budget-reserved-usd requires --budget-usd")
 			}
 
 			setupLogging(verbose)
@@ -58,6 +82,9 @@ func startCmd() *cobra.Command {
 
 			if err := config.Load(); err != nil {
 				slog.Warn("failed to load config, using defaults: " + err.Error())
+			}
+			if err := config.Get().ValidateCacheTTL(); err != nil {
+				return err
 			}
 			config.MergeDefaults()
 
@@ -92,13 +119,62 @@ func startCmd() *cobra.Command {
 			state.Global.SetModels(models)
 			slog.Info("models loaded", "count", len(models))
 
+			var directAnthropic *service.AnthropicClient
+			if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+				directAnthropic, err = service.NewAnthropicClient(api.HTTPClient(), key, os.Getenv("ANTHROPIC_WORKSPACE_ID"))
+				if err != nil {
+					return fmt.Errorf("configuring direct Anthropic API: %w", err)
+				}
+				ctx, cancel := context.WithTimeout(appCtx, 30*time.Second)
+				err = directAnthropic.RefreshModels(ctx)
+				cancel()
+				if err != nil {
+					return fmt.Errorf("loading direct Anthropic models: %w", err)
+				}
+				slog.Info("direct Anthropic API enabled", "models", len(directAnthropic.Models()))
+			}
+
+			// Admins can change which models are enabled at any time, so keep the
+			// cache fresh. A failed refresh keeps the previous list.
+			// ponytail: fixed 10m poll, no ETag; add conditional fetch if Copilot rate-limits it.
+			go func() {
+				ticker := time.NewTicker(10 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-appCtx.Done():
+						return
+					case <-ticker.C:
+						fresh, err := copilotClient.FetchModels(appCtx)
+						if err != nil {
+							slog.Warn("model refresh failed, keeping cached list", "error", err)
+						} else {
+							state.Global.SetModels(fresh)
+							slog.Debug("models refreshed", "count", len(fresh))
+						}
+						if directAnthropic != nil {
+							ctx, cancel := context.WithTimeout(appCtx, 30*time.Second)
+							err := directAnthropic.RefreshModels(ctx)
+							cancel()
+							if err != nil {
+								slog.Warn("Anthropic model refresh failed, keeping cached list", "error", err)
+							}
+						}
+					}
+				}
+			}()
+
+			setupModels := models
+			if directAnthropic != nil {
+				setupModels = handler.MergeProviderModels(models, directAnthropic.Models())
+			}
 			if claudeCode {
-				if err := runClaudeCodeSetup(port, models); err != nil {
+				if err := runClaudeCodeSetup(port, setupModels); err != nil {
 					slog.Warn("claude-code setup failed", "error", err)
 				}
 			}
 			if codex {
-				if err := runCodexSetup(port, models); err != nil {
+				if err := runCodexSetup(port, setupModels); err != nil {
 					slog.Warn("codex setup failed", "error", err)
 				}
 			}
@@ -110,11 +186,19 @@ func startCmd() *cobra.Command {
 			fmt.Println()
 			fmt.Printf("  Copilot API proxy is running on http://%s:%d\n", listenHost, port)
 			fmt.Printf("  Dashboard: http://%s:%d/dashboard?endpoint=http://%s:%d/usage\n", listenHost, port, listenHost, port)
+			if budget != nil {
+				fmt.Printf("  Estimated per-process token budget: $%g\n", budgetUSD)
+			}
 			fmt.Println()
 
-			endpoints := handler.New(handler.Dependencies{
-				State: state.Global, Metrics: state.Metrics, Copilot: copilotClient, HTTP: api.HTTPClient(),
-			})
+			deps := handler.Dependencies{
+				State: state.Global, Metrics: state.Metrics, Budget: budget, Copilot: copilotClient, HTTP: api.HTTPClient(),
+				ForceCacheTTL: forceCacheTTL, AnthropicFallback: anthropicFallback,
+			}
+			if directAnthropic != nil {
+				deps.DirectAnthropic = directAnthropic
+			}
+			endpoints := handler.New(deps)
 			srv := server.NewWithHandler(server.Options{
 				Host: host,
 				Port: port,
@@ -122,19 +206,16 @@ func startCmd() *cobra.Command {
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				cancelApp()
-				slog.Info("shutting down (30s timeout for in-flight requests)...")
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				srv.Shutdown(ctx)
-				logger.CloseAll()
-			}()
-
-			err = srv.ListenAndServe()
-			if err == http.ErrServerClosed {
-				return nil
+			defer signal.Stop(sigCh)
+			listener, err := net.Listen("tcp", srv.Addr)
+			if err != nil {
+				return err
+			}
+			err = serveUntilShutdown(srv, listener, sigCh, cancelApp)
+			if budget != nil {
+				snapshot := budget.Snapshot()
+				slog.Info("final token budget", "estimated_spent_usd", snapshot.EstimatedSpentUSD,
+					"reserved_usd", snapshot.ReservedUSD, "in_flight", snapshot.InFlight)
 			}
 			return err
 		},
@@ -149,6 +230,38 @@ func startCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&claudeCode, "claude-code", "c", false, "interactive model selection + env var generation for Claude Code")
 	cmd.Flags().BoolVar(&codex, "codex", false, "interactive model selection + command generation for Codex CLI")
 	cmd.Flags().BoolVar(&proxyEnv, "proxy-env", false, "enable HTTP proxy from environment variables")
+	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0, "estimated per-process token-spend ceiling in USD")
+	cmd.Flags().Float64Var(&budgetSpentUSD, "budget-spent-usd", 0, "restore a prior estimated token spend in USD (requires --budget-usd)")
+	cmd.Flags().Float64Var(&budgetReservedUSD, "budget-reserved-usd", 0, "portion of restored spend reserved for unknown usage (requires --budget-spent-usd)")
+	cmd.Flags().BoolVar(&anthropicFallback, "anthropic-fallback", true, "retry through Copilot when the direct Anthropic API rejects a request for credit, auth, rate-limit or server errors")
+	cmd.Flags().StringVar(&forceCacheTTL, "force-cache-ttl", "", "override all native Messages cache breakpoints with 5m or 1h")
 
 	return cmd
+}
+
+func serveUntilShutdown(srv *http.Server, listener net.Listener, signals <-chan os.Signal, cancelApp context.CancelFunc) error {
+	done := make(chan error, 1)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-signals:
+			cancelApp()
+			slog.Info("shutting down (30s timeout for in-flight requests)...")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			err := srv.Shutdown(ctx)
+			logger.CloseAll()
+			done <- err
+		case <-stop:
+		}
+	}()
+	err := srv.Serve(listener)
+	if err != http.ErrServerClosed {
+		return err
+	}
+	if err := <-done; err != nil {
+		return fmt.Errorf("shutting down server: %w", err)
+	}
+	return nil
 }

@@ -41,6 +41,15 @@ type CopilotClient interface {
 	ProxyMessages(context.Context, []byte, string, bool, bool) (*http.Response, error)
 	ProxyResponses(context.Context, []byte, bool, bool) (*http.Response, error)
 	ProxyEmbeddings(context.Context, []byte) (*http.Response, error)
+	ProxyCountTokens(context.Context, []byte, string) (*http.Response, error)
+}
+
+// DirectAnthropicClient is the optional first-party Messages API backend.
+type DirectAnthropicClient interface {
+	Models() []state.Model
+	FindModel(string) *state.Model
+	ProxyMessages(context.Context, []byte, http.Header) (*http.Response, error)
+	ProxyCountTokens(context.Context, []byte, http.Header) (*http.Response, error)
 }
 
 // HTTPDoer is used for GitHub endpoints that are not part of CopilotClient.
@@ -84,24 +93,33 @@ func (defaultHTTPDoer) Do(req *http.Request) (*http.Response, error) {
 
 // Dependencies contains the process services consumed by Handler.
 type Dependencies struct {
-	State     ApplicationState
-	Metrics   MetricsStore
-	Copilot   CopilotClient
-	HTTP      HTTPDoer
-	Anthropic AnthropicAdapter
-	Streams   StreamDecoder
-	Config    RuntimeConfig
+	State           ApplicationState
+	Metrics         MetricsStore
+	Budget          *state.TokenBudget
+	Copilot         CopilotClient
+	DirectAnthropic DirectAnthropicClient
+	HTTP            HTTPDoer
+	Anthropic       AnthropicAdapter
+	Streams         StreamDecoder
+	Config          RuntimeConfig
+	ForceCacheTTL   string
+	// AnthropicFallback retries a failed direct Anthropic call through Copilot.
+	AnthropicFallback bool
 }
 
 // Handler is the HTTP adapter for all public proxy endpoints.
 type Handler struct {
-	state     ApplicationState
-	metrics   MetricsStore
-	copilot   CopilotClient
-	http      HTTPDoer
-	anthropic AnthropicAdapter
-	streams   StreamDecoder
-	config    RuntimeConfig
+	state             ApplicationState
+	metrics           MetricsStore
+	budget            *state.TokenBudget
+	copilot           CopilotClient
+	directAnthropic   DirectAnthropicClient
+	http              HTTPDoer
+	anthropic         AnthropicAdapter
+	streams           StreamDecoder
+	config            RuntimeConfig
+	forceCacheTTL     string
+	anthropicFallback bool
 }
 
 func New(deps Dependencies) *Handler {
@@ -127,8 +145,10 @@ func New(deps Dependencies) *Handler {
 		deps.Anthropic = defaultAnthropicAdapter{models: deps.State, config: deps.Config}
 	}
 	return &Handler{
-		state: deps.State, metrics: deps.Metrics, copilot: deps.Copilot,
-		http: deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
+		state: deps.State, metrics: deps.Metrics, budget: deps.Budget, copilot: deps.Copilot,
+		directAnthropic: deps.DirectAnthropic,
+		http:            deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
+		forceCacheTTL: deps.ForceCacheTTL, anthropicFallback: deps.AnthropicFallback,
 	}
 }
 
