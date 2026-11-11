@@ -181,7 +181,11 @@ export ANTHROPIC_API_KEY
 
 The key is not a proxy-client authentication key and is not written to the configuration file. Keep it out of command history and replace it if exposed. GitHub authentication is still needed for the Copilot-backed endpoints.
 
-Supported models use Anthropic directly for `/v1/messages`, `/v1/messages/count_tokens`, and `/responses` translated to Messages; other models, Chat Completions, and Embeddings continue to use Copilot. On these routed endpoints, the response header `X-Copilot-Proxy-Upstream` identifies the selected provider. Direct-provider errors, including exhausted Anthropic credits, are returned to the caller rather than silently switching providers. Unset the key and restart to use Copilot for those models again.
+Supported models use Anthropic directly for `/v1/messages`, `/v1/messages/count_tokens`, and `/responses` translated to Messages; other models, Chat Completions, and Embeddings continue to use Copilot. On these routed endpoints, the response header `X-Copilot-Proxy-Upstream` identifies the selected provider.
+
+By default, when Anthropic rejects a `/v1/messages` or `/v1/messages/count_tokens` request because of exhausted credit, an authentication or permission error, rate limiting, or a server error, the proxy retries it through Copilot. Fallbacks are visible: the response carries `X-Copilot-Proxy-Fallback: anthropic; <reason>`, a warning is logged, the failed Anthropic attempt and the Copilot retry appear as separate dashboard rows, and `/api/stats` reports `fallback_count`. Malformed requests and connection failures are not retried, and `/responses` does not fall back. Start with `--anthropic-fallback=false` to return Anthropic errors to the caller instead.
+
+The dashboard's **Usage by provider** card and the `providers` field of `/api/stats` split requests, errors, and tokens between the Anthropic API and Copilot; with a budget, `budget.provider_spent_usd` splits this process's estimated spend (restored spend is not attributed).
 
 ## API Endpoints
 
@@ -226,6 +230,7 @@ Flags:
       --budget-spent-usd float  restore prior estimated spend (requires --budget-usd)
       --budget-reserved-usd float  reserved portion of restored spend (requires --budget-spent-usd)
       --force-cache-ttl string  override native Messages cache breakpoints: 5m or 1h
+      --anthropic-fallback      retry through Copilot when the direct Anthropic API fails (default true)
   -g, --github-token string   GitHub OAuth token (skips device code flow)
       --host string           host/IP to bind to, use 0.0.0.0 for all interfaces (default "127.0.0.1")
   -p, --port int              port to listen on (default 4141)

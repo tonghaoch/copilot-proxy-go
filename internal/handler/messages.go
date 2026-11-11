@@ -3,9 +3,12 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tonghaoch/copilot-proxy-go/internal/api"
 	"github.com/tonghaoch/copilot-proxy-go/internal/logger"
@@ -55,6 +58,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		model = h.directAnthropic.FindModel(ResolveAnthropicModel(req.Model))
 	}
 	direct := model != nil
+	copilotName := req.Model
 	if direct {
 		req.Model = model.ID
 		ww.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
@@ -159,17 +163,96 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	if subagent != nil {
 		r = r.WithContext(service.WithSubagentInteraction(r.Context()))
 	}
-	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec, direct)
+	var fallback func(error) bool
+	if direct {
+		fallback = func(err error) bool {
+			return h.fallbackToCopilot(ww, r, tracked, &req, copilotName, forceAgent, body, err)
+		}
+	}
+	h.dispatchMessages(ww, r, &req, model, forceAgent, body, rec, direct, fallback)
+}
+
+// fallbackToCopilot retries a direct Anthropic failure through Copilot. It
+// reports false, leaving the error to the caller, when fallback is disabled,
+// the error is the client's fault, or Copilot does not serve the model.
+func (h *Handler) fallbackToCopilot(w http.ResponseWriter, r *http.Request, tracked *trackedRequest, req *AnthropicRequest, name string, forceAgent bool, body []byte, err error) bool {
+	reason, status, ok := anthropicFallbackReason(err)
+	if !h.anthropicFallback || !ok || r.Context().Err() != nil {
+		return false
+	}
+	name = ResolveCopilotModel(name)
+	model := h.state.FindModel(name)
+	if model == nil {
+		if resolved := resolveAvailableClaudeMajor(name, h.state.GetModels()); resolved != "" {
+			name, model = resolved, h.state.FindModel(resolved)
+		}
+	}
+	if model == nil {
+		return false
+	}
+	slog.Warn("direct Anthropic request failed; falling back to Copilot", "model", req.Model, "copilot_model", name, "reason", reason)
+
+	rec := tracked.Record
+	attempt := *rec
+	attempt.StatusCode = status
+	attempt.Error = "anthropic: " + reason
+	attempt.LatencyMs = time.Since(tracked.start).Milliseconds()
+	// An error status from Anthropic carries no usage and is not billed.
+	attempt.UpstreamRejected = true
+	attempt.UsageIterations = nil
+	if tracked.admission != nil {
+		tracked.budget.Complete(tracked.admission, attempt)
+		tracked.admission = nil
+	}
+	tracked.metrics.RecordRequest(attempt)
+
+	*rec = state.RequestRecord{
+		Timestamp: rec.Timestamp, Endpoint: rec.Endpoint, Model: rec.Model, RoutedModel: name,
+		RequestType: rec.RequestType, Initiator: rec.Initiator, HasVision: rec.HasVision,
+		Streaming: rec.Streaming, ToolCount: rec.ToolCount, ThinkingBudget: rec.ThinkingBudget,
+		MultiIterationRisk: rec.MultiIterationRisk, RequireIterations: rec.RequireIterations,
+		Fallback: "anthropic: " + reason,
+	}
+	req.Model = name
+	filterUnsupportedTools(req)
+	w.Header().Set("X-Copilot-Proxy-Fallback", "anthropic; "+reason)
+	w.Header().Set("X-Copilot-Proxy-Routed-Model", name)
+	if !h.admitBudget(w, tracked, model, messagesBackend(model)) {
+		return true
+	}
+	h.dispatchMessages(w, r, req, model, forceAgent, body, rec, false, nil)
+	return true
+}
+
+// anthropicFallbackReason classifies errors Copilot may succeed on: account,
+// credential, rate-limit and server problems. Malformed requests and transport
+// failures (which may already have been billed) are not retried.
+func anthropicFallbackReason(err error) (string, int, bool) {
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) {
+		return "", 0, false
+	}
+	switch status := httpErr.StatusCode; {
+	case status == http.StatusBadRequest && strings.Contains(strings.ToLower(httpErr.Body+httpErr.Message), "credit balance"):
+		return "insufficient credit", status, true
+	case status == http.StatusUnauthorized || status == http.StatusPaymentRequired || status == http.StatusForbidden:
+		return fmt.Sprintf("auth %d", status), status, true
+	case status == http.StatusTooManyRequests:
+		return "rate limited", status, true
+	case status >= 500:
+		return fmt.Sprintf("upstream %d", status), status, true
+	}
+	return "", 0, false
 }
 
 // dispatchMessages sends a parsed Anthropic request to the backend that serves
 // its model: native Messages, Responses, or Chat Completions. Split out so the
 // Responses endpoint can reuse the router for models without /responses.
-func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord, direct bool) {
+func (h *Handler) dispatchMessages(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, model *state.Model, forceAgent bool, body []byte, rec *state.RequestRecord, direct bool, fallback func(error) bool) {
 	if direct {
 		rec.Backend = "anthropic"
 		w.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
-		h.handleWithDirectAnthropicAPI(w, r, req, body, rec)
+		h.handleWithDirectAnthropicAPI(w, r, req, body, rec, fallback)
 		return
 	}
 	w.Header().Set("X-Copilot-Proxy-Upstream", "copilot")

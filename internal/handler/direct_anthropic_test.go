@@ -136,7 +136,7 @@ func TestDirectAnthropicPreferredAndBudgetedWithNativePayload(t *testing.T) {
 	}
 }
 
-func TestDirectAnthropicErrorsDoNotFallBackOrSpendBudget(t *testing.T) {
+func TestDirectAnthropicErrorsForwardedWhenFallbackDisabled(t *testing.T) {
 	direct := &directTestClient{
 		models: []state.Model{directTestModel("claude-opus-5-5")},
 		err: &api.HTTPError{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"5"}},
@@ -532,5 +532,70 @@ func TestDirectUnexpectedIterationPausesBudget(t *testing.T) {
 		`{"model":"claude-haiku-5-5","max_tokens":5000,"messages":[{"role":"user","content":"hi"}]}`)))
 	if snapshot := budget.Snapshot(); w.Code != http.StatusOK || !snapshot.Blocked || !strings.Contains(snapshot.Reason, "unpriced") {
 		t.Fatalf("unknown iteration must pause admission: status=%d budget=%+v", w.Code, snapshot)
+	}
+}
+
+type fallbackTestMetrics struct {
+	responsesTestMetrics
+	records []state.RequestRecord
+}
+
+func (m *fallbackTestMetrics) RecordRequest(rec state.RequestRecord) { m.records = append(m.records, rec) }
+
+func TestDirectAnthropicFallsBackToCopilot(t *testing.T) {
+	var copilotModel state.Model
+	if err := json.Unmarshal([]byte(`{"id":"claude-opus-5.5","supported_endpoints":["/v1/messages"],
+		"capabilities":{"limits":{"max_context_window_tokens":200000,"max_output_tokens":32000}},
+		"billing":{"token_prices":{"batch_size":1000000,"default":{"input_price":5,"output_price":25,
+		"cache_read_price":0.5,"cache_write_price":6.25,"cache_write_1h_price":10}}}}`), &copilotModel); err != nil {
+		t.Fatal(err)
+	}
+	newHandler := func(err error, fallback bool) (*Handler, *cacheTestCopilot, *state.TokenBudget, *fallbackTestMetrics) {
+		models := &state.State{}
+		models.SetModels([]state.Model{copilotModel})
+		copilot := &cacheTestCopilot{response: `{"id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1000,"output_tokens":100}}`}
+		budget, _ := state.NewTokenBudget(100)
+		metrics := &fallbackTestMetrics{}
+		return New(Dependencies{
+			State: models, Metrics: metrics, Budget: budget, Copilot: copilot, Config: responsesTestConfig{},
+			DirectAnthropic: &directTestClient{models: []state.Model{directTestModel("claude-opus-5-5")}, err: err},
+			AnthropicFallback: fallback,
+		}), copilot, budget, metrics
+	}
+	send := func(h *Handler) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.Messages(w, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+			`{"model":"claude-opus-5-5","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}`)))
+		return w
+	}
+	credit := &api.HTTPError{StatusCode: http.StatusBadRequest,
+		Body: `{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}`}
+
+	h, copilot, budget, metrics := newHandler(credit, true)
+	w := send(h)
+	if w.Code != http.StatusOK || w.Header().Get("X-Copilot-Proxy-Upstream") != "copilot" ||
+		w.Header().Get("X-Copilot-Proxy-Fallback") != "anthropic; insufficient credit" || !strings.Contains(string(copilot.body), `"claude-opus-5.5"`) {
+		t.Fatalf("fallback: status=%d headers=%v copilot=%s body=%s", w.Code, w.Header(), copilot.body, w.Body)
+	}
+	if len(metrics.records) != 2 || metrics.records[0].Backend != "anthropic" || metrics.records[0].StatusCode != http.StatusBadRequest ||
+		metrics.records[1].Backend != "messages" || metrics.records[1].Fallback == "" {
+		t.Fatalf("fallback not visible in metrics: %+v", metrics.records)
+	}
+	snap := budget.Snapshot()
+	if snap.InFlight != 0 || snap.Blocked || snap.ProviderSpentUSD["anthropic"] != 0 || snap.ProviderSpentUSD["copilot"] <= 0 {
+		t.Fatalf("fallback budget: %+v", snap)
+	}
+
+	for name, tc := range map[string]struct {
+		err      error
+		fallback bool
+	}{
+		"disabled":        {credit, false},
+		"invalid request": {&api.HTTPError{StatusCode: http.StatusBadRequest, Body: `{"error":{"message":"max_tokens: too large"}}`}, true},
+	} {
+		h, copilot, _, _ := newHandler(tc.err, tc.fallback)
+		if w := send(h); w.Code != http.StatusBadRequest || len(copilot.body) != 0 || w.Header().Get("X-Copilot-Proxy-Fallback") != "" {
+			t.Fatalf("%s: should not fall back: status=%d copilot=%s", name, w.Code, copilot.body)
+		}
 	}
 }

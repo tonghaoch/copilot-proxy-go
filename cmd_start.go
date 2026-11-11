@@ -37,6 +37,7 @@ func startCmd() *cobra.Command {
 		budgetUSD         float64
 		budgetSpentUSD    float64
 		budgetReservedUSD float64
+		anthropicFallback bool
 		forceCacheTTL     string
 	)
 
@@ -192,7 +193,7 @@ func startCmd() *cobra.Command {
 
 			deps := handler.Dependencies{
 				State: state.Global, Metrics: state.Metrics, Budget: budget, Copilot: copilotClient, HTTP: api.HTTPClient(),
-				ForceCacheTTL: forceCacheTTL,
+				ForceCacheTTL: forceCacheTTL, AnthropicFallback: anthropicFallback,
 			}
 			if directAnthropic != nil {
 				deps.DirectAnthropic = directAnthropic
@@ -232,6 +233,7 @@ func startCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0, "estimated per-process token-spend ceiling in USD")
 	cmd.Flags().Float64Var(&budgetSpentUSD, "budget-spent-usd", 0, "restore a prior estimated token spend in USD (requires --budget-usd)")
 	cmd.Flags().Float64Var(&budgetReservedUSD, "budget-reserved-usd", 0, "portion of restored spend reserved for unknown usage (requires --budget-spent-usd)")
+	cmd.Flags().BoolVar(&anthropicFallback, "anthropic-fallback", true, "retry through Copilot when the direct Anthropic API rejects a request for credit, auth, rate-limit or server errors")
 	cmd.Flags().StringVar(&forceCacheTTL, "force-cache-ttl", "", "override all native Messages cache breakpoints with 5m or 1h")
 
 	return cmd

@@ -73,7 +73,7 @@ func (h *Handler) responsesViaMessages(w http.ResponseWriter, r *http.Request, p
 		h.streamResponsesViaMessages(w, r, req, model, forceAgent, body, rec, capture, customTools, direct)
 		return
 	}
-	h.dispatchMessages(capture, r, req, model, forceAgent, body, rec, direct)
+	h.dispatchMessages(capture, r, req, model, forceAgent, body, rec, direct, nil)
 
 	if capture.status >= 400 {
 		w.WriteHeader(capture.status)
@@ -124,7 +124,7 @@ func (h *Handler) streamResponsesViaMessages(w http.ResponseWriter, r *http.Requ
 		}
 		done <- err
 	}()
-	h.dispatchMessages(capture, r.WithContext(ctx), req, model, forceAgent, body, rec, direct)
+	h.dispatchMessages(capture, r.WithContext(ctx), req, model, forceAgent, body, rec, direct, nil)
 	writer.Close()
 	err := <-done
 	if capture.status >= 400 {

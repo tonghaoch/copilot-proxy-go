@@ -49,16 +49,22 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("X-Copilot-Proxy-Upstream", "anthropic")
 			resp, err := h.directAnthropic.ProxyCountTokens(r.Context(), body, r.Header)
-			if err != nil {
+			if err == nil {
+				defer resp.Body.Close()
+				copyAnthropicResponseHeaders(w.Header(), resp.Header)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(resp.StatusCode)
+				io.Copy(w, resp.Body)
+				return
+			}
+			reason, _, ok := anthropicFallbackReason(err)
+			if !h.anthropicFallback || !ok {
 				api.ForwardError(w, err)
 				return
 			}
-			defer resp.Body.Close()
-			copyAnthropicResponseHeaders(w.Header(), resp.Header)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-			return
+			slog.Warn("direct Anthropic token count failed; falling back to Copilot", "model", model.ID, "reason", reason)
+			w.Header().Set("X-Copilot-Proxy-Fallback", "anthropic; "+reason)
+			raw["model"] = req.Model
 		}
 	}
 

@@ -24,6 +24,7 @@ type TokenBudget struct {
 	inFlight              int
 	blocked               string
 	conservativeEstimates int64
+	providerSpent         map[string]int64
 }
 
 type BudgetAdmission struct {
@@ -42,6 +43,8 @@ type BudgetSnapshot struct {
 	Blocked               bool    `json:"blocked"`
 	Reason                string  `json:"reason,omitempty"`
 	ConservativeEstimates int64   `json:"conservative_estimates"`
+	// ProviderSpentUSD splits this process's estimate (excluding restored spend) by provider.
+	ProviderSpentUSD map[string]float64 `json:"provider_spent_usd,omitempty"`
 }
 
 func NewTokenBudget(limitUSD float64) (*TokenBudget, error) {
@@ -212,6 +215,10 @@ func (b *TokenBudget) Complete(admission *BudgetAdmission, rec RequestRecord) {
 	}
 	b.spent += cost
 	b.reserved += reserve
+	if b.providerSpent == nil {
+		b.providerSpent = make(map[string]int64)
+	}
+	b.providerSpent[Provider(admission.backend)] += cost
 	if reserve > 0 {
 		b.conservativeEstimates += rec.UncertainRetries
 		if !complete && !rec.UpstreamRejected {
@@ -269,7 +276,19 @@ func (b *TokenBudget) Snapshot() BudgetSnapshot {
 		ReportedUsageUSD: float64(b.spent-b.reserved) / nanoUSD, ReservedUSD: float64(b.reserved) / nanoUSD,
 		RemainingUSD: float64(remaining) / nanoUSD, InFlight: b.inFlight,
 		Blocked: reason != "", Reason: reason, ConservativeEstimates: b.conservativeEstimates,
+		ProviderSpentUSD: providerUSD(b.providerSpent),
 	}
+}
+
+func providerUSD(spent map[string]int64) map[string]float64 {
+	if len(spent) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(spent))
+	for provider, nanos := range spent {
+		out[provider] = float64(nanos) / nanoUSD
+	}
+	return out
 }
 
 func estimateIncompleteTokenCost(model Model, rec RequestRecord) (int64, error) {

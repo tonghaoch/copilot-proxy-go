@@ -103,20 +103,23 @@ type Dependencies struct {
 	Streams         StreamDecoder
 	Config          RuntimeConfig
 	ForceCacheTTL   string
+	// AnthropicFallback retries a failed direct Anthropic call through Copilot.
+	AnthropicFallback bool
 }
 
 // Handler is the HTTP adapter for all public proxy endpoints.
 type Handler struct {
-	state           ApplicationState
-	metrics         MetricsStore
-	budget          *state.TokenBudget
-	copilot         CopilotClient
-	directAnthropic DirectAnthropicClient
-	http            HTTPDoer
-	anthropic       AnthropicAdapter
-	streams         StreamDecoder
-	config          RuntimeConfig
-	forceCacheTTL   string
+	state             ApplicationState
+	metrics           MetricsStore
+	budget            *state.TokenBudget
+	copilot           CopilotClient
+	directAnthropic   DirectAnthropicClient
+	http              HTTPDoer
+	anthropic         AnthropicAdapter
+	streams           StreamDecoder
+	config            RuntimeConfig
+	forceCacheTTL     string
+	anthropicFallback bool
 }
 
 func New(deps Dependencies) *Handler {
@@ -145,7 +148,7 @@ func New(deps Dependencies) *Handler {
 		state: deps.State, metrics: deps.Metrics, budget: deps.Budget, copilot: deps.Copilot,
 		directAnthropic: deps.DirectAnthropic,
 		http:            deps.HTTP, anthropic: deps.Anthropic, streams: deps.Streams, config: deps.Config,
-		forceCacheTTL: deps.ForceCacheTTL,
+		forceCacheTTL: deps.ForceCacheTTL, anthropicFallback: deps.AnthropicFallback,
 	}
 }
 

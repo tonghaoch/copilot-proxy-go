@@ -10,7 +10,7 @@ import (
 	"github.com/tonghaoch/copilot-proxy-go/internal/state"
 )
 
-func (h *Handler) handleWithDirectAnthropicAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, rawBody []byte, rec *state.RequestRecord) {
+func (h *Handler) handleWithDirectAnthropicAPI(w http.ResponseWriter, r *http.Request, req *AnthropicRequest, rawBody []byte, rec *state.RequestRecord, fallback func(error) bool) {
 	var payload map[string]any
 	if err := json.Unmarshal(rawBody, &payload); err != nil || payload == nil {
 		api.ForwardError(w, api.InvalidRequest("invalid Anthropic request body", err))
@@ -33,6 +33,9 @@ func (h *Handler) handleWithDirectAnthropicAPI(w http.ResponseWriter, r *http.Re
 	rec.UpstreamAttempted = true
 	resp, err := h.directAnthropic.ProxyMessages(r.Context(), body, r.Header)
 	if err != nil {
+		if fallback != nil && fallback(err) {
+			return
+		}
 		markUpstreamFailure(rec, err)
 		api.ForwardError(w, err)
 		return

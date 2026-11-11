@@ -869,6 +869,9 @@ function render() {
   // Estimated token budget
   html += renderBudgetCard();
 
+  // Usage by upstream provider
+  html += renderProviderCard();
+
   // Plan Overview
   html += renderPlanCard();
 
@@ -964,6 +967,32 @@ function renderBudgetCard() {
   html += '<div style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.5rem">Estimate, not a GitHub invoice. ';
   html += formatNumber(budget.in_flight || 0) + ' in flight; ' + formatNumber(budget.conservative_estimates || 0) + ' conservative estimates.</div>';
   if (budget.reason) html += '<div style="font-size:0.8rem;color:var(--red)">' + escapeHtml(budget.reason) + '</div>';
+  return html + '</div>';
+}
+
+function renderProviderCard() {
+  if (!statsData || !statsData.config || !statsData.config.direct_anthropic) return '';
+  const providers = statsData.providers || {};
+  const spent = (statsData.budget && statsData.budget.provider_spent_usd) || {};
+  const money = n => '$' + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 4});
+  let html = '<div class="card"><div class="card-label">Usage by provider</div>';
+  html += '<table class="activity-table"><thead><tr><th>Provider</th><th>Requests</th><th>Errors</th><th>Input / Output</th><th>Cache read / write</th>';
+  if (statsData.budget) html += '<th>Est. spend</th>';
+  html += '</tr></thead><tbody>';
+  for (const name of ['anthropic', 'copilot']) {
+    const p = providers[name] || {};
+    html += '<tr><td><strong>' + (name === 'anthropic' ? 'Anthropic API' : 'Copilot') + '</strong></td>';
+    html += '<td>' + formatNumber(p.requests || 0) + '</td><td>' + formatNumber(p.errors || 0) + '</td>';
+    html += '<td>' + formatNumber((p.input_tokens || 0) + (p.cached_tokens || 0) + (p.cache_creation_tokens || 0)) + ' / ' + formatNumber(p.output_tokens || 0) + '</td>';
+    html += '<td>' + formatNumber(p.cached_tokens || 0) + ' / ' + formatNumber(p.cache_creation_tokens || 0) + '</td>';
+    if (statsData.budget) html += '<td>' + money(spent[name] || 0) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  const fallback = statsData.config.anthropic_fallback;
+  html += '<div style="font-size:0.8rem;margin-top:0.5rem;color:' + ((statsData.fallback_count || 0) > 0 ? 'var(--yellow)' : 'var(--fg-dim)') + '">';
+  html += 'Copilot fallback ' + (fallback ? 'enabled' : 'disabled') + '; ' + formatNumber(statsData.fallback_count || 0) + ' request(s) fell back.</div>';
+  html += '<div style="font-size:0.75rem;color:var(--fg-muted);margin-top:0.25rem">Spend split covers this process only; restored spend is not attributed.</div>';
   return html + '</div>';
 }
 
@@ -1205,6 +1234,7 @@ function renderActivityFeed() {
     const model = r.routed_model || r.model || '';
     const shortModel = model.length > 24 ? model.substring(0, 22) + '..' : model;
     const backend = r.backend || '';
+    const fellBack = r.fallback ? ' <span class="badge badge-error" title="' + escapeHtml(r.fallback) + '">fallback</span>' : '';
     const reqType = r.request_type || '';
     const who = r.initiator || '';
     const uncached = r.input_tokens || 0;
@@ -1217,7 +1247,7 @@ function renderActivityFeed() {
     html += '<tr>';
     html += '<td>' + escapeHtml(ts) + '</td>';
     html += '<td><span class="model-id">' + escapeHtml(shortModel) + '</span></td>';
-    html += '<td><span class="badge badge-' + escapeHtml(backend) + '">' + escapeHtml(backend) + '</span></td>';
+    html += '<td><span class="badge badge-' + escapeHtml(backend) + '">' + escapeHtml(backend) + '</span>' + fellBack + '</td>';
     html += '<td><span class="badge badge-' + escapeHtml(reqType) + '">' + escapeHtml(reqType) + '</span></td>';
     html += '<td>' + (who === 'agent' ? '&#x1f916;' : '&#x1f464;') + '</td>';
     html += '<td title="' + escapeHtml(tokenDetail) + '" style="font-variant-numeric:tabular-nums">' + tokens + '</td>';
@@ -1256,7 +1286,8 @@ function renderDistributionCharts() {
     const backendColors = {
       'messages': 'var(--accent)',
       'responses': 'var(--purple)',
-      'chat_completions': 'var(--green)'
+      'chat_completions': 'var(--green)',
+      'anthropic': 'var(--orange)'
     };
     html += renderBarChartWithColors(statsData.backend_counts, backendColors);
   } else {
