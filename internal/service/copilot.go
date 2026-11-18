@@ -140,6 +140,10 @@ func ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*ht
 }
 
 func (c *Client) ProxyResponses(ctx context.Context, body []byte, isAgent, vision bool) (*http.Response, error) {
+	body, err := prepareResponsesBody(ctx, body)
+	if err != nil {
+		return nil, err
+	}
 	return c.doCopilotRequest(ctx, http.MethodPost, "/responses", body, requestHeaders(isAgent, vision, ""))
 }
 

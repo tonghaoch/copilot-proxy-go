@@ -179,6 +179,8 @@ Configure API keys before exposing the server with `--host 0.0.0.0`, and use TLS
 | `/api/stats` | GET | In-memory request metrics and latest session snapshot |
 | `/dashboard` | GET | Usage dashboard (web UI) |
 
+Copilot's Responses API accepts at most 32 MiB of JSON per request, independently of the model's token context window. For larger requests, the proxy first compacts JSON and recompresses inline PNG images losslessly, then converts older opaque PNGs to JPEG at quality 90 if needed. Image dimensions and conversation items are retained. Requests that still exceed the limit return a size error with guidance to reduce images or start a new conversation with a summary.
+
 ## CLI Reference
 
 ### `start` — Run the proxy server
