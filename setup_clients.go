@@ -33,7 +33,7 @@ func responsesCapableModelIDs(models []state.Model) []string {
 	return ids
 }
 
-func codexAPIKey() string {
+func proxyAPIKey() string {
 	keys := config.GetAPIKeys()
 	if len(keys) > 0 {
 		return keys[0]
@@ -74,7 +74,7 @@ func runCodexSetup(port int, models []state.Model) error {
 		contextWindow = m.Capabilities.Limits.MaxContextWindowTokens
 	}
 	vars := []shell.EnvVar{
-		{Key: "CODEX_API_KEY", Value: codexAPIKey()},
+		{Key: "CODEX_API_KEY", Value: proxyAPIKey()},
 		{Key: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
 		{Key: "no_proxy", Value: "localhost,127.0.0.1,::1"},
 	}
@@ -83,7 +83,7 @@ func runCodexSetup(port int, models []state.Model) error {
 	return nil
 }
 
-func runClaudeCodeSetup(port int, models []state.Model) error {
+func runClaudeCodeSetup(port int, models []state.Model, saveSettings bool) error {
 	seen := make(map[string]struct{}, len(models))
 	ids := make([]string, 0, len(models))
 	for _, m := range models {
@@ -107,19 +107,34 @@ func runClaudeCodeSetup(port int, models []state.Model) error {
 
 	copilotSmall := handler.ResolveCopilotModel(smallModel)
 	if err := config.SetSmallModel(copilotSmall); err != nil {
+		if saveSettings {
+			return fmt.Errorf("persist small model: %w", err)
+		}
 		slog.Warn("failed to persist small model to config", "error", err)
 	} else {
 		slog.Info("config.smallModel updated", "model", copilotSmall)
 	}
 
+	if saveSettings {
+		path, err := saveClaudeCodeSettings(claudeCodeEnv(port, primaryModel, smallModel, proxyAPIKey()))
+		if err != nil {
+			return fmt.Errorf("save Claude Code settings: %w", err)
+		}
+		fmt.Printf("\n  Updated Claude Code settings: %s\n\n", path)
+		return nil
+	}
 	printGeneratedScript(buildClaudeCodeCommand(shell.Detect(), port, primaryModel, smallModel))
 	return nil
 }
 
 func buildClaudeCodeCommand(shellType shell.ShellType, port int, primaryModel, smallModel string) string {
-	vars := []shell.EnvVar{
+	return shell.GenerateExportScript(shellType, claudeCodeEnv(port, primaryModel, smallModel, "copilot-proxy"), "claude")
+}
+
+func claudeCodeEnv(port int, primaryModel, smallModel, apiKey string) []shell.EnvVar {
+	return []shell.EnvVar{
 		{Key: "ANTHROPIC_BASE_URL", Value: fmt.Sprintf("http://localhost:%d", port)},
-		{Key: "ANTHROPIC_AUTH_TOKEN", Value: "copilot-proxy"},
+		{Key: "ANTHROPIC_AUTH_TOKEN", Value: apiKey},
 		{Key: "ANTHROPIC_MODEL", Value: primaryModel},
 		{Key: "ANTHROPIC_SMALL_FAST_MODEL", Value: smallModel},
 		{Key: "ANTHROPIC_DEFAULT_SONNET_MODEL", Value: primaryModel},
@@ -127,7 +142,6 @@ func buildClaudeCodeCommand(shellType shell.ShellType, port int, primaryModel, s
 		{Key: "DISABLE_NON_ESSENTIAL_MODEL_CALLS", Value: "1"},
 		{Key: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", Value: "1"},
 	}
-	return shell.GenerateExportScript(shellType, vars, "claude")
 }
 
 func printGeneratedScript(script string) {
